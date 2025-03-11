@@ -18,10 +18,10 @@ the contained instances / types transfers ownership to the resulting type. For e
 Result<std::string void> a = Ok("hello world");
 
 // safe; a is moved
-std::cout << a.unwrap() << std::endl
+std::cout << a.unwrap() << std::endl;
 
 // unsafe
-std::cout << a.unwrap().size() << std::endl
+std::cout << a.unwrap().size() << std::endl;
 ```
 
 ## Example Usage
