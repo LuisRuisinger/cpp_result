@@ -18,7 +18,8 @@
     #define RESULT_NODISCARD    __pragma(warning(error: 6031))
 
 #else
-  #define RESULT_MAYBE_UNUSED
+    #define RESULT_MAYBE_UNUSED
+    #define RESULT_NODISCARD
 
 #endif
 
@@ -33,6 +34,138 @@ namespace Result {
 template <typename T, typename E>
 struct Result;
 
+namespace Utils {
+
+// implementation of a replacement of C++17's std::void_t
+template <typename ...>
+struct make_void { typedef void type; };
+
+template <typename ...Args>
+using void_t = typename make_void<Args...>::type;
+
+
+
+
+
+// comparable trait
+template <typename L, typename R, typename _ = void>
+struct is_eq_comparable : std::false_type {};
+
+template <typename L, typename R>
+struct is_eq_comparable<
+    L, R, void_t<decltype(std::declval<L>() == std::declval<R>())>> : std::true_type {};
+
+template <typename L, typename R, typename _ = void>
+struct is_ne_comparable : std::false_type {};
+
+template <typename L, typename R>
+struct is_ne_comparable<
+    L, R, void_t<decltype(std::declval<L>() != std::declval<R>())>> : std::true_type {};
+
+template <typename L, typename R, typename _ = void>
+struct is_lt_comparable : std::false_type {};
+
+template <typename L, typename R>
+struct is_lt_comparable<
+    L, R, void_t<decltype(std::declval<L>() < std::declval<R>())>> : std::true_type {};
+
+template <typename L, typename R, typename _ = void>
+struct is_gt_comparable : std::false_type {};
+
+template <typename L, typename R>
+struct is_gt_comparable<
+    L, R, void_t<decltype(std::declval<L>() > std::declval<R>())>> : std::true_type {};
+
+template <typename L, typename R, typename _ = void>
+struct is_le_comparable : std::false_type {};
+
+template <typename L, typename R>
+struct is_le_comparable<
+    L, R, void_t<decltype(std::declval<L>() <= std::declval<R>())>> : std::true_type {};
+
+template <typename L, typename R, typename _ = void>
+struct is_ge_comparable : std::false_type {};
+
+template <typename L, typename R>
+struct is_ge_comparable<
+    L, R, void_t<decltype(std::declval<L>() >= std::declval<R>())>> : std::true_type {};
+
+
+
+
+
+// implementation of a replacement of C++14's Utils::enable_if_t
+template<bool B, typename T = void>
+using enable_if_t = typename std::enable_if<B, T>::type;
+
+
+
+
+
+// implementation of a replacement of C++14's std::is_convertible
+namespace Details {
+
+template <typename, typename _ = void>
+struct is_returnable : std::false_type {};
+
+template <typename T>
+struct is_returnable<T, void_t<decltype(static_cast<T (*)()>(nullptr))>> : std::true_type {};
+
+template <typename, typename, typename = void>
+struct is_implicit_convertible : std::false_type {};
+
+template <typename From, typename To>
+struct is_implicit_convertible<From, To,
+    void_t<decltype(std::declval<void(&)(To)>()(std::declval<From>()))>> : std::true_type {};
+
+template <typename F, typename T>
+struct is_convertible : std::integral_constant<
+    bool, is_returnable<T>::value && is_implicit_convertible<F, T>::value> {};
+
+template <>
+struct is_convertible<void, void> : std::true_type {};
+
+} // Details
+
+template <typename F, typename T>
+struct is_convertible : Details::is_convertible<F, T> {};
+
+
+
+
+
+// implementation of a replacement of C++14's constexpr Utils::max
+template <typename T, Utils::enable_if_t<Utils::is_eq_comparable<T, T>::value, bool> = true>
+constexpr T max(T a, T b) {
+    return a > b ? a : b;
+}
+
+
+
+
+
+// decomposition of function-like calls to extract the result
+template <typename F, typename C = void>
+struct result_of;
+
+template <typename R, typename ...Args>
+struct result_of<R (Args...)> { typedef R type; };
+
+template <typename C, typename ...Args, typename R>
+struct result_of<R (C::*)(Args...)> : result_of<R (Args...)> {};
+
+template <typename C, typename ...Args, typename R>
+struct result_of<R (C::*)(Args...) const> : result_of<R (Args...)> {};
+
+template<typename R, typename ...Args>
+struct result_of<R (*)(Args...)> : result_of<R (Args...)> {};
+
+template <typename F>
+struct result_of<
+    F, Utils::void_t<decltype(&F::operator())>> : result_of<decltype(&F::operator())> {};
+
+}
+
 
 
 
@@ -44,6 +177,36 @@ struct Ok {
     explicit Ok (const T &t) : _t { t } {}
     explicit Ok (T &&t) : _t { std::move(t) } {}
 
+    template <typename U, Utils::enable_if_t<Utils::is_eq_comparable<T, U>::value, bool> = true>
+    bool operator==(const Ok<U> &other) {
+        return _t == other._t;
+    }
+
+    template <typename U, Utils::enable_if_t<Utils::is_ne_comparable<T, U>::value, bool> = true>
+    bool operator!=(const Ok<U> &other) {
+        return _t != other._t;
+    }
+
+    template <typename U, Utils::enable_if_t<Utils::is_lt_comparable<T, U>::value, bool> = true>
+    bool operator<(const Ok<U> &other) {
+        return _t < other._t;
+    }
+
+    template <typename U, Utils::enable_if_t<Utils::is_gt_comparable<T, U>::value, bool> = true>
+    bool operator>(const Ok<U> &other) {
+        return _t > other._t;
+    }
+
+    template <typename U, Utils::enable_if_t<Utils::is_le_comparable<T, U>::value, bool> = true>
+    bool operator<=(const Ok<U> &other) {
+        return _t <= other._t;
+    }
+
+    template <typename U, Utils::enable_if_t<Utils::is_ge_comparable<T, U>::value, bool> = true>
+    bool operator>=(const Ok<U> &other) {
+        return _t >= other._t;
+    }
+
     T _t;
 };
 
@@ -54,6 +217,36 @@ template <typename E>
 struct Err {
     explicit Err (const E &e) : _e { e } {}
     explicit Err (E &&e) : _e { std::move(e) } {}
+
+    template <typename U, Utils::enable_if_t<Utils::is_eq_comparable<E, U>::value, bool> = true>
+    bool operator==(const Err<U> &other) {
+        return _e == other._e;
+    }
+
+    template <typename U, Utils::enable_if_t<Utils::is_ne_comparable<E, U>::value, bool> = true>
+    bool operator!=(const Err<U> &other) {
+        return _e != other._e;
+    }
+
+    template <typename U, Utils::enable_if_t<Utils::is_lt_comparable<E, U>::value, bool> = true>
+    bool operator<(const Err<U> &other) {
+        return _e < other._e;
+    }
+
+    template <typename U, Utils::enable_if_t<Utils::is_gt_comparable<E, U>::value, bool> = true>
+    bool operator>(const Err<U> &other) {
+        return _e > other._e;
+    }
+
+    template <typename U, Utils::enable_if_t<Utils::is_le_comparable<E, U>::value, bool> = true>
+    bool operator<=(const Err<U> &other) {
+        return _e <= other._e;
+    }
+
+    template <typename U, Utils::enable_if_t<Utils::is_ge_comparable<E, U>::value, bool> = true>
+    bool operator>=(const Err<U> &other) {
+        return _e >= other._e;
+    }
 
     E _e;
 };
@@ -108,103 +301,7 @@ struct destruct_result<Result<T, E>> { typedef T Ok; typedef E Err; };
 
 
 
-// implementation of a replacement of C++14's Utils::enable_if_t 
-template<bool B, typename T = void>
-using enable_if_t = typename std::enable_if<B, T>::type;
-
-
-
-
-
-// implementation of a replacement of C++17's std::void_t
-template <typename ...>
-struct make_void { typedef void type; };
-
-template <typename ...Args>
-using void_t = typename make_void<Args...>::type;
-
-
-
-
-
-// implementation of a replacement of C++14's std::is_convertible
-namespace Details {
-
-template <typename, typename _ = void>
-struct is_returnable : std::false_type {};
-
-template <typename T>
-struct is_returnable<T, void_t<decltype(static_cast<T (*)()>(nullptr))>> : std::true_type {};
-
-template <typename, typename, typename = void>
-struct is_implicit_convertible : std::false_type {};
-
-template <typename From, typename To>
-struct is_implicit_convertible<From, To,
-    void_t<decltype(std::declval<void(&)(To)>()(std::declval<From>()))>> : std::true_type {};
-
-template <typename F, typename T>
-struct is_convertible : std::integral_constant<
-    bool, is_returnable<T>::value && is_implicit_convertible<F, T>::value> {};
-
-template <>
-struct is_convertible<void, void> : std::true_type {};
-
-} // Details
-
-template <typename F, typename T>
-struct is_convertible : Details::is_convertible<F, T> {};
-
-
-
-
-
-// 
-template <typename T, typename _ = void>
-struct is_comparable : std::false_type {};
-
-template <typename T>
-struct is_comparable<
-    T, Utils::void_t<decltype(std::declval<T>() == std::declval<T>())>> : std::true_type {};
-
-
-
-
-
-// implementation of a replacement of C++14's constexpr Utils::max
-template <typename T, Utils::enable_if_t<Utils::is_comparable<T>::value, bool> = true>
-constexpr T max(T a, T b) {
-    return a > b ? a : b;
-}
-
-
-
-
-
-// decomposition of function-like calls to extract the result
-template <typename F, typename C = void>
-struct result_of;
-
-template <typename R, typename ...Args>
-struct result_of<R (Args...)> { typedef R type; };
-
-template <typename C, typename ...Args, typename R>
-struct result_of<R (C::*)(Args...)> : result_of<R (Args...)> {};
-
-template <typename C, typename ...Args, typename R>
-struct result_of<R (C::*)(Args...) const> : result_of<R (Args...)> {};
-
-template<typename R, typename ...Args>
-struct result_of<R (*)(Args...)> : result_of<R (Args...)> {};
-
-template <typename F>
-struct result_of<
-    F, Utils::void_t<decltype(&F::operator())>> : result_of<decltype(&F::operator())> {};
-
-
-
-
-
+// storage container for an arbitrary result
 template <typename T, typename E>
 struct Storage {
     alignas(Utils::max(alignof(T), alignof(E)))
@@ -964,9 +1061,9 @@ public:
      *          Consumes the underlying Result<T, E>.
      */
     template <
-            typename F,
-            typename R = typename Utils::result_of<F>::type,
-            typename U = typename Utils::destruct_result<R>::Err>
+        typename F,
+        typename R = typename Utils::result_of<F>::type,
+        typename U = typename Utils::destruct_result<R>::Err>
     RESULT_MAYBE_UNUSED Result<T, U> or_else(F fun) {
         if (is_err()) {
             return std::move(Proxy::map_err(*this, fun).storage().template get<R>());
@@ -981,46 +1078,15 @@ public:
 
 
     /**
-     * @brief   Only available if T and E are equality comparable.
-     *          Returns true if both results contain Ok<T> and the instances of T are equal.
-     *          Returns true if both results contain Err<E> and the instances of E are equal.
-     *          Else returns false.
-     */
-    template <
-        typename _T = T,
-        typename _E = E,
-        Utils::enable_if_t<Utils::is_comparable<_T>::value, bool> = true,
-        Utils::enable_if_t<Utils::is_comparable<_E>::value, bool> = true>
-    bool operator==(const Result<T, E> &other) {
-        if (is_ok() && other.is_ok()) {
-            return storage().template get<T>() == other.storage().template get<T>();
-        }
-
-        if (is_err() && other.is_err()) {
-            return storage().template get<E>() == other.storage().template get<E>();
-        }
-
-        return false;
-    }
-
-
-
-
-
-    /**
      * @brief   Only available if T is equality comparable.
      *          Returns true if both Result<T, E> and Ok<T> contain Ok<T>
      *          and the instances of T are equal, else false.
      */
     template <
-        typename _T = T,
-        Utils::enable_if_t<Utils::is_comparable<_T>::value, bool> = true>
-    bool operator==(const Wrapper::Ok<T> &other) {
-        if (is_ok()) {
-            return storage().template get<T>() == other._t;
-        }
-
-        return false;
+        typename U,
+        Utils::enable_if_t<Utils::is_eq_comparable<U, T>::value, bool> = true>
+    bool operator==(const Wrapper::Ok<U> &other) {
+        return is_ok() && (storage().template get<T>() == other._t);
     }
 
 
@@ -1033,14 +1099,10 @@ public:
      *          and the instances of E are equal, else false.
      */
     template <
-        typename _E = E,
-        Utils::enable_if_t<Utils::is_comparable<_E>::value, bool> = true>
-    bool operator==(const Wrapper::Err<E> &other) {
-        if (is_err()) {
-            return storage().template get<E>() == other._e;
-        }
-
-        return false;
+        typename U,
+        Utils::enable_if_t<Utils::is_eq_comparable<U, E>::value, bool> = true>
+    bool operator==(const Wrapper::Err<U> &other) {
+        return is_err() && (storage().template get<E>() == other._e);
     }
 
 
@@ -1053,16 +1115,14 @@ public:
      *          else false.
      */
     template <
-        typename _T = T,
-        typename _E = E,
-        Utils::enable_if_t< Utils::is_comparable<_T>::value, bool> = true,
-        Utils::enable_if_t<!Utils::is_comparable<_E>::value, bool> = true>
-    bool operator==( const Result<T, E> &other) {
-        if (is_ok() && other.is_ok()) {
-            return storage().template get<T>() == other.storage().template get<T>();
-        }
-
-        return false;
+        typename F,
+        typename G,
+        Utils::enable_if_t< Utils::is_eq_comparable<F, T>::value, bool> = true,
+        Utils::enable_if_t<!Utils::is_eq_comparable<G, E>::value, bool> = true>
+    bool operator==( const Result<F, G> &other) {
+        return 
+            (is_ok() && other.is_ok()) && 
+            (storage().template get<T>() == other.storage().template get<F>());
     }
 
 
@@ -1075,13 +1135,548 @@ public:
      *          else false.
      */
     template <
-        typename _T = T,
-        typename _E = E,
-        Utils::enable_if_t<!Utils::is_comparable<_T>::value, bool> = true,
-        Utils::enable_if_t< Utils::is_comparable<_E>::value, bool> = true>
-    bool operator==(const Result<T, E> &other) {
+        typename F,
+        typename G,
+        Utils::enable_if_t<!Utils::is_eq_comparable<F, T>::value, bool> = true,
+        Utils::enable_if_t< Utils::is_eq_comparable<G, E>::value, bool> = true>
+    bool operator==(const Result<F, G> &other) {
+        return 
+            (is_err() && other.is_err()) && 
+            (storage().template get<E>() == other.storage().template get<G>());
+    }
+
+    
+
+
+
+    /**
+     * @brief   Only available if T and E are equality comparable.
+     *          Returns true if both results contain Ok<T> and the instances of T are equal.
+     *          Returns true if both results contain Err<E> and the instances of E are equal.
+     *          Else returns false.
+     */
+    template <
+        typename F,
+        typename G,
+        Utils::enable_if_t<Utils::is_eq_comparable<F, T>::value, bool> = true,
+        Utils::enable_if_t<Utils::is_eq_comparable<G, E>::value, bool> = true>
+    bool operator==(const Result<F, G> &other) {
+        if (is_ok() && other.is_ok()) {
+            return storage().template get<T>() == other.storage().template get<F>();
+        }
+
         if (is_err() && other.is_err()) {
-            return storage().template get<E>() == other.storage().template get<E>();
+            return storage().template get<E>() == other.storage().template get<G>();
+        }
+
+        return false;
+    }
+    
+    
+    
+    
+    
+    /**
+     * @brief   Only available if T is not-equal comparable.
+     *          Returns true if both Result<T, E> and Ok<T> contain Ok<T>
+     *          and the instances of T are equal, else false.
+     */
+    template <
+        typename U,
+        Utils::enable_if_t<Utils::is_ne_comparable<U, T>::value, bool> = true>
+    bool operator!=(const Wrapper::Ok<U> &other) {
+        return is_ok() && (storage().template get<T>() != other._t);
+    }
+
+
+
+
+
+    /**
+     * @brief   Only available if E is equality comparable.
+     *          Returns true if both Result<T, E> and Err<E> contain Err<E>
+     *          and the instances of E are equal, else false.
+     */
+    template <
+        typename U,
+        Utils::enable_if_t<Utils::is_ne_comparable<U, E>::value, bool> = true>
+    bool operator!=(const Wrapper::Err<U> &other) {
+        return is_err() && (storage().template get<E>() != other._e);
+    }
+    
+    
+    
+    
+    
+    /**
+     * @brief   Only available if T but no E is equality comparable.
+     *          Returns false if both results contain Ok<T> and the instances of T are equal,
+     *          else true.
+     */
+    template <
+        typename F,
+        typename G,
+        Utils::enable_if_t< Utils::is_ne_comparable<F, T>::value, bool> = true,
+        Utils::enable_if_t<!Utils::is_ne_comparable<G, E>::value, bool> = true>
+    bool operator!=(const Result<F, G> &other) {
+        return
+            (is_ok() && other.is_ok()) &&
+            (storage().template get<T>() != other.storage().template get<F>());
+    }
+
+
+
+
+
+    /**
+     * @brief   Only available if E but no T is equality comparable.
+     *          Returns false if both results contain Err<E> and the instances of E are equal,
+     *          else true.
+     */
+    template <
+        typename F,
+        typename G,
+        Utils::enable_if_t<!Utils::is_ne_comparable<F, T>::value, bool> = true,
+        Utils::enable_if_t< Utils::is_ne_comparable<G, E>::value, bool> = true>
+    bool operator!=(const Result<F, G> &other) {
+        return
+            (is_err() && other.is_err()) &&
+            (storage().template get<E>() != other.storage().template get<G>());
+    }
+
+    /**
+     * @brief   Only available if T and E are not-equal comparable.
+     *          Returns true if this result contains Ok<T>, other contains Ok<F>, 
+     *          and the instance of T is not equal to the instance of F.
+     *          Returns true if this result contains Err<E>, other contains Err<G>, 
+     *          and the instance of E is not equal to instance of G.
+     *          Returns false otherwise.
+     */
+    template <
+        typename F,
+        typename G,
+        Utils::enable_if_t<Utils::is_ne_comparable<F, T>::value, bool> = true,
+        Utils::enable_if_t<Utils::is_ne_comparable<G, E>::value, bool> = true>
+    bool operator!=(const Result<F, G> &other) {
+        if (is_ok() && other.is_ok()) {
+            return storage().template get<T>() != other.storage().template get<F>();
+        }
+
+        if (is_err() && other.is_err()) {
+            return storage().template get<E>() != other.storage().template get<G>();
+        }
+
+        return false;
+    }
+
+
+
+
+
+    /**
+     * @brief   Only available if T is less-than comparable.
+     *          Returns true if this result contains Ok<T>
+     *          and the instance of T is less than the instance in other,
+     *          else false.
+     */
+    template <
+        typename U,
+        Utils::enable_if_t<Utils::is_lt_comparable<U, T>::value, bool> = true>
+    bool operator<(const Wrapper::Ok<U> &other) {
+        return is_ok() && (storage().template get<T>() < other._t);
+    }
+
+
+
+
+
+    /**
+     * @brief   Only available if E is less-than comparable.
+     *          Returns true if this result contains Err<E>
+     *          and the instance of E is less than the instance in other,
+     *          else false.
+     */
+    template <
+        typename U,
+        Utils::enable_if_t<Utils::is_lt_comparable<U, E>::value, bool> = true>
+    bool operator<(const Wrapper::Err<U> &other) {
+        return is_err() && (storage().template get<E>() < other._e);
+    }
+
+
+
+
+
+    /**
+     * @brief   Only available if T but no E is less-than comparable.
+     *          Returns true if both results contain Ok<T> and the instance of T
+     *          is less than the instance of F, else false.
+     */
+    template <
+        typename F,
+        typename G,
+        Utils::enable_if_t< Utils::is_lt_comparable<F, T>::value, bool> = true,
+        Utils::enable_if_t<!Utils::is_lt_comparable<G, E>::value, bool> = true>
+    bool operator<(const Result<F, G> &other) {
+        return 
+            (is_ok() && other.is_ok()) && 
+            (storage().template get<T>() < other.storage().template get<F>());
+    }
+
+
+
+
+
+    /**
+     * @brief   Only available if E but no T is less-than comparable.
+     *          Returns true if both results contain Err<E> and the instance of E
+     *          is less than the instance of G, else false.
+     */
+    template <
+        typename F,
+        typename G,
+        Utils::enable_if_t<!Utils::is_lt_comparable<F, T>::value, bool> = true,
+        Utils::enable_if_t< Utils::is_lt_comparable<G, E>::value, bool> = true>
+    bool operator<(const Result<F, G> &other) {
+        return 
+            (is_err() && other.is_err()) && 
+            (storage().template get<E>() < other.storage().template get<G>());
+    }
+
+
+    
+    
+    
+    /**
+     * @brief   Only available if T and E are less-than comparable.
+     *          Returns true if this result contains Ok<T>, other contains Ok<F>, 
+     *          and the instance of T is less than the instance of F.
+     *          Returns true if this result contains Err<E>, other contains Err<G>, 
+     *          and the instance of E is less than the instance of G.
+     *          Returns false otherwise.
+     */
+    template <
+        typename F,
+        typename G,
+        Utils::enable_if_t<Utils::is_lt_comparable<F, T>::value, bool> = true,
+        Utils::enable_if_t<Utils::is_lt_comparable<G, E>::value, bool> = true>
+    bool operator<(const Result<F, G> &other) {
+        if (is_ok() && other.is_ok()) {
+            return storage().template get<T>() < other.storage().template get<F>();
+        }
+
+        if (is_err() && other.is_err()) {
+            return storage().template get<E>() < other.storage().template get<G>();
+        }
+
+        return false;
+    }
+
+
+
+
+
+    /**
+     * @brief   Only available if T is less-than-or-equal comparable.
+     *          Returns true if this result contains Ok<T>
+     *          and the instance of T is less than or equal to the instance in other,
+     *          else false.
+     */
+    template <
+        typename U,
+        Utils::enable_if_t<Utils::is_le_comparable<U, T>::value, bool> = true>
+    bool operator<=(const Wrapper::Ok<U> &other) {
+        return is_ok() && (storage().template get<T>() <= other._t);
+    }
+
+
+
+
+
+    /**
+     * @brief   Only available if E is less-than-or-equal comparable.
+     *          Returns true if this result contains Err<E>
+     *          and the instance of E is less than or equal to the instance in other,
+     *          else false.
+     */
+    template <
+        typename U,
+        Utils::enable_if_t<Utils::is_le_comparable<U, E>::value, bool> = true>
+    bool operator<=(const Wrapper::Err<U> &other) {
+        return is_err() && (storage().template get<E>() <= other._e);
+    }
+
+
+
+
+
+    /**
+     * @brief   Only available if T but no E is less-than-or-equal comparable.
+     *          Returns true if both results contain Ok<T> and the instance of T
+     *          is less than or equal to the instance of F, else false.
+     */
+    template <
+        typename F,
+        typename G,
+        Utils::enable_if_t< Utils::is_le_comparable<F, T>::value, bool> = true,
+        Utils::enable_if_t<!Utils::is_le_comparable<G, E>::value, bool> = true>
+    bool operator<=(const Result<F, G> &other) {
+        return 
+            (is_ok() && other.is_ok()) && 
+            (storage().template get<T>() <= other.storage().template get<F>());
+            
+    }
+
+
+
+
+
+    /**
+     * @brief   Only available if E but no T is less-than-or-equal comparable.
+     *          Returns true if both results contain Err<E> and the instance of E
+     *          is less than or equal to the instance of G, else false.
+     */
+    template <
+        typename F,
+        typename G,
+        Utils::enable_if_t<!Utils::is_le_comparable<F, T>::value, bool> = true,
+        Utils::enable_if_t< Utils::is_le_comparable<G, E>::value, bool> = true>
+    bool operator<=(const Result<F, G> &other) {
+        return 
+            (is_err() && other.is_err()) && 
+            (storage().template get<E>() <= other.storage().template get<G>());
+    }
+
+
+
+
+
+    /**
+     * @brief   Only available if T and E are less-than-or-equal comparable.
+     *          Returns true if this result contains Ok<T>, other contains Ok<F>,
+     *          and the instance of T is less than or equal to the instance of F.
+     *          Returns true if this result contains Err<E>, other contains Err<G>,
+     *          and the instance of E is less than or equal to the instance of G.
+     *          Returns false otherwise.
+     */
+    template <
+        typename F,
+        typename G,
+        Utils::enable_if_t<Utils::is_le_comparable<F, T>::value, bool> = true,
+        Utils::enable_if_t<Utils::is_le_comparable<G, E>::value, bool> = true>
+    bool operator<=(const Result<F, G> &other) {
+        if (is_ok() && other.is_ok()) {
+            return storage().template get<T>() <= other.storage().template get<F>();
+        }
+
+        if (is_err() && other.is_err()) {
+            return storage().template get<E>() <= other.storage().template get<G>();
+        }
+
+        return false;
+    }
+
+
+
+
+
+    /**
+     * @brief   Only available if T is greater-than comparable.
+     *          Returns true if this result contains Ok<T>
+     *          and the instance of T is greater than the instance in other,
+     *          else false.
+     */
+    template <
+        typename U,
+        Utils::enable_if_t<Utils::is_gt_comparable<U, T>::value, bool> = true>
+    bool operator>(const Wrapper::Ok<U> &other) {
+        return is_ok() && (storage().template get<T>() > other._t);
+    }
+
+
+
+
+
+    /**
+     * @brief   Only available if E is greater-than comparable.
+     *          Returns true if this result contains Err<E>
+     *          and the instance of E is greater than the instance in other,
+     *          else false.
+     */
+    template <
+        typename U,
+        Utils::enable_if_t<Utils::is_gt_comparable<U, E>::value, bool> = true>
+    bool operator>(const Wrapper::Err<U> &other) {
+        return is_err() && (storage().template get<E>() > other._e);
+    }
+
+
+
+
+
+    /**
+     * @brief   Only available if T but no E is greater-than comparable.
+     *          Returns true if both results contain Ok<T> and the instance of T
+     *          is greater than the instance of F, else false.
+     */
+    template <
+        typename F,
+        typename G,
+        Utils::enable_if_t< Utils::is_gt_comparable<F, T>::value, bool> = true,
+        Utils::enable_if_t<!Utils::is_gt_comparable<G, E>::value, bool> = true>
+    bool operator>(const Result<F, G> &other) {
+        return 
+            (is_ok() && other.is_ok()) && 
+            (storage().template get<T>() > other.storage().template get<F>());
+    }
+
+
+
+
+
+    /**
+     * @brief   Only available if E but no T is greater-than comparable.
+     *          Returns true if both results contain Err<E> and the instance of E
+     *          is greater than the instance of G, else false.
+     */
+    template <
+        typename F,
+        typename G,
+        Utils::enable_if_t<!Utils::is_gt_comparable<F, T>::value, bool> = true,
+        Utils::enable_if_t< Utils::is_gt_comparable<G, E>::value, bool> = true>
+    bool operator>(const Result<F, G> &other) {
+        return 
+            (is_err() && other.is_err()) &&
+            (storage().template get<E>() > other.storage().template get<G>());
+    }
+
+
+
+
+
+    /**
+     * @brief   Only available if T and E are greater-than comparable.
+     *          Returns true if this result contains Ok<T>, other contains Ok<F>,
+     *          and the instance of T is greater than the instance of F.
+     *          Returns true if this result contains Err<E>, other contains Err<G>,
+     *          and the instance of E is greater than the instance of G.
+     *          Returns false otherwise.
+     */
+    template <
+        typename F,
+        typename G,
+        Utils::enable_if_t<Utils::is_gt_comparable<F, T>::value, bool> = true,
+        Utils::enable_if_t<Utils::is_gt_comparable<G, E>::value, bool> = true>
+    bool operator>(const Result<F, G> &other) {
+        if (is_ok() && other.is_ok()) {
+            return storage().template get<T>() > other.storage().template get<F>();
+        }
+
+        if (is_err() && other.is_err()) {
+            return storage().template get<E>() > other.storage().template get<G>();
+        }
+
+        return false;
+    }
+
+
+
+
+
+    /**
+     * @brief   Only available if T is greater-than-or-equal comparable.
+     *          Returns true if this result contains Ok<T>
+     *          and the instance of T is greater than or equal to the instance in other,
+     *          else false.
+     */
+    template <
+        typename U,
+        Utils::enable_if_t<Utils::is_ge_comparable<U, T>::value, bool> = true>
+    bool operator>=(const Wrapper::Ok<U> &other) {
+        return is_ok() && (storage().template get<T>() >= other._t);
+    }
+
+
+
+
+
+    /**
+     * @brief   Only available if E is greater-than-or-equal comparable.
+     *          Returns true if this result contains Err<E>
+     *          and the instance of E is greater than or equal to the instance in other,
+     *          else false.
+     */
+    template <
+        typename U,
+        Utils::enable_if_t<Utils::is_ge_comparable<U, E>::value, bool> = true>
+    bool operator>=(const Wrapper::Err<U> &other) {
+        return is_err() && (storage().template get<E>() >= other._e);
+    }
+
+
+
+
+
+    /**
+     * @brief   Only available if T but no E is greater-than-or-equal comparable.
+     *          Returns true if both results contain Ok<T> and the instance of T
+     *          is greater than or equal to the instance of F, else false.
+     */
+    template <
+        typename F,
+        typename G,
+        Utils::enable_if_t< Utils::is_ge_comparable<F, T>::value, bool> = true,
+        Utils::enable_if_t<!Utils::is_ge_comparable<G, E>::value, bool> = true>
+    bool operator>=(const Result<F, G> &other) {
+        return 
+            (is_ok() && other.is_ok()) && 
+            (storage().template get<T>() >= other.storage().template get<F>());
+    }
+
+
+
+
+
+    /**
+     * @brief   Only available if E but no T is greater-than-or-equal comparable.
+     *          Returns true if both results contain Err<E> and the instance of E
+     *          is greater than or equal to the instance of G, else false.
+     */
+    template <
+        typename F,
+        typename G,
+        Utils::enable_if_t<!Utils::is_ge_comparable<F, T>::value, bool> = true,
+        Utils::enable_if_t< Utils::is_ge_comparable<G, E>::value, bool> = true>
+    bool operator>=(const Result<F, G> &other) {
+        return
+            (is_err() && other.is_err()) &&
+            (storage().template get<E>() >= other.storage().template get<G>());
+    }
+
+
+
+
+
+    /**
+     * @brief   Only available if T and E are greater-than-or-equal comparable.
+     *          Returns true if this result contains Ok<T>, other contains Ok<F>,
+     *          and the instance of T is greater than or equal to the instance of F.
+     *          Returns true if this result contains Err<E>, other contains Err<G>,
+     *          and the instance of E is greater than or equal to the instance of G.
+     *          Returns false otherwise.
+     */
+    template <
+        typename F,
+        typename G,
+        Utils::enable_if_t<Utils::is_ge_comparable<F, T>::value, bool> = true,
+        Utils::enable_if_t<Utils::is_ge_comparable<G, E>::value, bool> = true>
+    bool operator>=(const Result<F, G> &other) {
+        if (is_ok() && other.is_ok()) {
+            return storage().template get<T>() >= other.storage().template get<F>();
+        }
+
+        if (is_err() && other.is_err()) {
+            return storage().template get<E>() >= other.storage().template get<G>();
         }
 
         return false;
