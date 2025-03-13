@@ -261,20 +261,20 @@ struct Err<void> {};
 
 
 template <typename T>
-RESULT_MAYBE_UNUSED Wrapper::Ok<typename std::decay<T>::type> Ok(T &&t) {
+RESULT_MAYBE_UNUSED static Wrapper::Ok<typename std::decay<T>::type> Ok(T &&t) {
     return Wrapper::Ok<typename std::decay<T>::type>(std::forward<T>(t));
 }
 
 template <typename E>
-RESULT_MAYBE_UNUSED Wrapper::Err<typename std::decay<E>::type> Err(E &&e) {
+RESULT_MAYBE_UNUSED static Wrapper::Err<typename std::decay<E>::type> Err(E &&e) {
     return Wrapper::Err<typename std::decay<E>::type>(std::forward<E>(e));
 }
 
-RESULT_MAYBE_UNUSED Wrapper::Ok<void> Ok() {
+RESULT_MAYBE_UNUSED static Wrapper::Ok<void> Ok() {
     return Wrapper::Ok<void> {};
 }
 
-RESULT_MAYBE_UNUSED Wrapper::Err<void> Err() {
+RESULT_MAYBE_UNUSED static Wrapper::Err<void> Err() {
     return Wrapper::Err<void> {};
 }
 
