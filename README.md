@@ -4,12 +4,13 @@ A Rust-like `Result<T, E>` container compatible with C++11/14/17/20.
 
 ## Overview
 
-`Result<T, E>` is a container that encapsulates either a successful value (`T`) or an error (`E`). 
-It provides functional-style methods like `map`, `or_else`, `and_then`, and `unwrap` 
-for error handling, transformation or logic branching. 
+`Result<T, E>` is a container that encapsulates either a successful value (`T`) or an error (`E`).
+It provides functional-style methods like `map`, `or_else`, `and_then`, and `unwrap`
+for error handling, transformation or logic branching.
 
 ### Caveat
-Any operation, transforming the container or 
+
+Any operation, transforming the container or
 the contained instances / types transfers ownership to the resulting type. For example
 
 ```cpp

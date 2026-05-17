@@ -1,26 +1,23 @@
 #ifndef CPP_RESULT_RESULT_HPP
 #define CPP_RESULT_RESULT_HPP
 
+#include <exception>
 #include <functional>
 #include <iostream>
+#include <memory>
+#include <string>
 #include <type_traits>
+#include <utility>
+#include <variant>
 
-#if defined(__cplusplus) && __cplusplus >= 201703L
-#    define RESULT_MAYBE_UNUSED [[maybe_unused]]
-#    define RESULT_NODISCARD [[nodiscard]]
+// =================================================================================================
+// Project files
+// =================================================================================================
 
-#elif defined(__GNUC__) || defined(__clang__)
-#    define RESULT_MAYBE_UNUSED __attribute__((unused))
-#    define RESULT_NODISCARD __attribute__((warn_unused_result))
+#include "optional.hpp"
 
-#elif defined(_MSC_VER)
-#    define RESULT_MAYBE_UNUSED __pragma(warning(suppress : 4505))
-#    define RESULT_NODISCARD __pragma(warning(error : 6031))
-
-#else
-#    define RESULT_MAYBE_UNUSED
-#    define RESULT_NODISCARD
-
+#if !defined(__cplusplus) || __cplusplus < 201703L
+#    error "Result<T, E> implementation requires C++17 or later."
 #endif
 
 #define RESULT_ERROR(_m)              \
@@ -30,1336 +27,1201 @@
     } while (0)
 
 #ifdef RESULT_NAMESPACE
-namespace Result {
+namespace lsr::result {
 #endif
 
-// forward declaration
-template <typename T, typename E>
-struct Result;
+template <typename T, typename E, auto OkSentinel = tiny::UseDefaultValue,
+          auto ErrSentinel = tiny::UseDefaultValue>
+class Result;
 
-namespace Utils {
+// =================================================================================================
+// Wrapper types
+// =================================================================================================
 
-// implementation of a replacement of C++17's std::void_t
-template <typename...>
-struct make_void {
-    typedef void type;
-};
+namespace wrapper {
 
-template <typename... Args>
-using void_t = typename make_void<Args...>::type;
-
-// comparable trait
-template <typename L, typename R, typename _ = void>
-struct is_eq_comparable : std::false_type {};
-
-template <typename L, typename R>
-struct is_eq_comparable<L, R, void_t<decltype(std::declval<L>() == std::declval<R>())>>
-    : std::true_type {};
-
-template <typename L, typename R, typename _ = void>
-struct is_ne_comparable : std::false_type {};
-
-template <typename L, typename R>
-struct is_ne_comparable<L, R, void_t<decltype(std::declval<L>() != std::declval<R>())>>
-    : std::true_type {};
-
-template <typename L, typename R, typename _ = void>
-struct is_lt_comparable : std::false_type {};
-
-template <typename L, typename R>
-struct is_lt_comparable<L, R, void_t<decltype(std::declval<L>() < std::declval<R>())>>
-    : std::true_type {};
-
-template <typename L, typename R, typename _ = void>
-struct is_gt_comparable : std::false_type {};
-
-template <typename L, typename R>
-struct is_gt_comparable<L, R, void_t<decltype(std::declval<L>() > std::declval<R>())>>
-    : std::true_type {};
-
-template <typename L, typename R, typename _ = void>
-struct is_le_comparable : std::false_type {};
-
-template <typename L, typename R>
-struct is_le_comparable<L, R, void_t<decltype(std::declval<L>() <= std::declval<R>())>>
-    : std::true_type {};
-
-template <typename L, typename R, typename _ = void>
-struct is_ge_comparable : std::false_type {};
-
-template <typename L, typename R>
-struct is_ge_comparable<L, R, void_t<decltype(std::declval<L>() >= std::declval<R>())>>
-    : std::true_type {};
-
-// implementation of a replacement of C++14's Utils::enable_if_t
-template <bool B, typename T = void>
-using enable_if_t = typename std::enable_if<B, T>::type;
-
-// implementation of a replacement of C++14's std::is_convertible
-namespace Details {
-
-template <typename, typename _ = void>
-struct is_returnable : std::false_type {};
-
-template <typename T>
-struct is_returnable<T, void_t<decltype(static_cast<T (*)()>(nullptr))>> : std::true_type {};
-
-template <typename, typename, typename = void>
-struct is_implicit_convertible : std::false_type {};
-
-template <typename From, typename To>
-struct is_implicit_convertible<From, To,
-                               void_t<decltype(std::declval<void (&)(To)>()(std::declval<From>()))>>
-    : std::true_type {};
-
-template <typename F, typename T>
-struct is_convertible : std::integral_constant<bool, is_returnable<T>::value &&
-                                                         is_implicit_convertible<F, T>::value> {};
-
-template <>
-struct is_convertible<void, void> : std::true_type {};
-
-}  // namespace Details
-
-template <typename F, typename T>
-struct is_convertible : Details::is_convertible<F, T> {};
-
-// implementation of a replacement of C++14's constexpr Utils::max
-template <typename T, Utils::enable_if_t<Utils::is_gt_comparable<T, T>::value, bool> = true>
-constexpr T max(T a, T b) {
-    return a > b ? a : b;
-}
-
-// decomposition of function-like calls to extract the result
-template <typename F, typename C = void>
-struct result_of;
-
-template <typename R, typename... Args>
-struct result_of<R(Args...)> {
-    typedef R type;
-};
-
-template <typename C, typename... Args, typename R>
-struct result_of<R (C::*)(Args...)> : result_of<R(Args...)> {};
-
-template <typename C, typename... Args, typename R>
-struct result_of<R (C::*)(Args...) const> : result_of<R(Args...)> {};
-
-template <typename R, typename... Args>
-struct result_of<R (*)(Args...)> : result_of<R(Args...)> {};
-
-template <typename F>
-struct result_of<F, Utils::void_t<decltype(&F::operator())>> : result_of<decltype(&F::operator())> {
-};
-
-}  // namespace Utils
-
-namespace Wrapper {
+// =================================================================================================
+// Ok
+// =================================================================================================
 
 template <typename T>
 struct Ok {
-    explicit Ok(const T &t) : _t{ t } {}
-    explicit Ok(T &&t) : _t{ std::move(t) } {}
+    using value_type = T;
+    explicit Ok(const T &v) : value(v) {}
+    explicit Ok(T &&v) : value(std::move(v)) {}
 
-    template <typename U, Utils::enable_if_t<Utils::is_eq_comparable<T, U>::value, bool> = true>
-    bool operator==(const Ok<U> &other) {
-        return _t == other._t;
-    }
+    T value;
+};
 
-    template <typename U, Utils::enable_if_t<Utils::is_ne_comparable<T, U>::value, bool> = true>
-    bool operator!=(const Ok<U> &other) {
-        return _t != other._t;
-    }
+template <typename T>
+struct Ok<T &> {
+    using value_type = T &;
+    explicit Ok(T &v) noexcept : value(std::addressof(v)) {}
 
-    template <typename U, Utils::enable_if_t<Utils::is_lt_comparable<T, U>::value, bool> = true>
-    bool operator<(const Ok<U> &other) {
-        return _t < other._t;
-    }
-
-    template <typename U, Utils::enable_if_t<Utils::is_gt_comparable<T, U>::value, bool> = true>
-    bool operator>(const Ok<U> &other) {
-        return _t > other._t;
-    }
-
-    template <typename U, Utils::enable_if_t<Utils::is_le_comparable<T, U>::value, bool> = true>
-    bool operator<=(const Ok<U> &other) {
-        return _t <= other._t;
-    }
-
-    template <typename U, Utils::enable_if_t<Utils::is_ge_comparable<T, U>::value, bool> = true>
-    bool operator>=(const Ok<U> &other) {
-        return _t >= other._t;
-    }
-
-    T _t;
+    T *value;
 };
 
 template <>
 struct Ok<void> {};
 
+// =================================================================================================
+// Err
+// =================================================================================================
+
 template <typename E>
 struct Err {
-    explicit Err(const E &e) : _e{ e } {}
-    explicit Err(E &&e) : _e{ std::move(e) } {}
+    using value_type = E;
+    explicit Err(const E &e) : value(e) {}
+    explicit Err(E &&e) : value(std::move(e)) {}
 
-    template <typename U, Utils::enable_if_t<Utils::is_eq_comparable<E, U>::value, bool> = true>
-    bool operator==(const Err<U> &other) {
-        return _e == other._e;
-    }
+    E value;
+};
 
-    template <typename U, Utils::enable_if_t<Utils::is_ne_comparable<E, U>::value, bool> = true>
-    bool operator!=(const Err<U> &other) {
-        return _e != other._e;
-    }
+template <typename E>
+struct Err<E &> {
+    using value_type = E &;
+    explicit Err(E &e) noexcept : value(std::addressof(e)) {}
 
-    template <typename U, Utils::enable_if_t<Utils::is_lt_comparable<E, U>::value, bool> = true>
-    bool operator<(const Err<U> &other) {
-        return _e < other._e;
-    }
-
-    template <typename U, Utils::enable_if_t<Utils::is_gt_comparable<E, U>::value, bool> = true>
-    bool operator>(const Err<U> &other) {
-        return _e > other._e;
-    }
-
-    template <typename U, Utils::enable_if_t<Utils::is_le_comparable<E, U>::value, bool> = true>
-    bool operator<=(const Err<U> &other) {
-        return _e <= other._e;
-    }
-
-    template <typename U, Utils::enable_if_t<Utils::is_ge_comparable<E, U>::value, bool> = true>
-    bool operator>=(const Err<U> &other) {
-        return _e >= other._e;
-    }
-
-    E _e;
+    E *value;
 };
 
 template <>
 struct Err<void> {};
 
-}  // namespace Wrapper
+}  // namespace wrapper
 
 template <typename T>
-RESULT_MAYBE_UNUSED static Wrapper::Ok<typename std::decay<T>::type> Ok(T &&t) {
-    return Wrapper::Ok<typename std::decay<T>::type>(std::forward<T>(t));
+[[maybe_unused]] static auto Ok(T &&ok) {
+    using U = std::conditional_t<std::is_lvalue_reference_v<T>, T, std::decay_t<T>>;
+    return wrapper::Ok<U>(std::forward<T>(ok));
 }
 
 template <typename E>
-RESULT_MAYBE_UNUSED static Wrapper::Err<typename std::decay<E>::type> Err(E &&e) {
-    return Wrapper::Err<typename std::decay<E>::type>(std::forward<E>(e));
+[[maybe_unused]] static auto Err(E &&err) {
+    using U = std::conditional_t<std::is_lvalue_reference_v<E>, E, std::decay_t<E>>;
+    return wrapper::Err<U>(std::forward<E>(err));
 }
 
-RESULT_MAYBE_UNUSED static Wrapper::Ok<void> Ok() { return Wrapper::Ok<void>{}; }
+[[maybe_unused]] static auto Ok() { return wrapper::Ok<void>{}; }
 
-RESULT_MAYBE_UNUSED static Wrapper::Err<void> Err() { return Wrapper::Err<void>{}; }
+[[maybe_unused]] static auto Err() { return wrapper::Err<void>{}; }
 
-namespace Utils {
+// =================================================================================================
+// Helper functionality
+// =================================================================================================
 
-// QoL utility to check if some type is Result<T, E> and to decompose Result<T,
-// E>
-template <typename T>
+namespace detail {
+
+template <typename X>
 struct is_result : std::false_type {};
 
-template <typename T, typename E>
-struct is_result<Result<T, E>> : std::true_type {};
+template <typename T, typename E, auto OS, auto ES>
+struct is_result<Result<T, E, OS, ES>> : std::true_type {};
 
-template <typename T>
-struct destruct_result {
-    typedef void type;
-};
+template <typename X>
+struct destruct_result;
 
-template <typename T, typename E>
-struct destruct_result<Result<T, E>> {
-    typedef T Ok;
-    typedef E Err;
-};
-
-// storage container for an arbitrary result
-template <typename T, typename E>
-struct Storage {
-    alignas(Utils::max(alignof(T), alignof(E)))
-        std::array<std::uint8_t, Utils::max(sizeof(T), sizeof(E))> _storage = { 0 };
-    std::size_t _type;
-
-    RESULT_MAYBE_UNUSED explicit Storage(const Wrapper::Ok<T> &s)
-        : _type{ typeid(Wrapper::Ok<T>).hash_code() } {
-        construct(s);
-    }
-
-    RESULT_MAYBE_UNUSED explicit Storage(const Wrapper::Err<E> &s)
-        : _type{ typeid(Wrapper::Err<E>).hash_code() } {
-        construct(s);
-    }
-
-    RESULT_MAYBE_UNUSED explicit Storage(Wrapper::Ok<T> &&s)
-        : _type{ typeid(Wrapper::Ok<T>).hash_code() } {
-        construct(std::move(s));
-    }
-
-    RESULT_MAYBE_UNUSED explicit Storage(Wrapper::Err<E> &&s)
-        : _type{ typeid(Wrapper::Err<E>).hash_code() } {
-        construct(std::move(s));
-    }
-
-    void construct(Wrapper::Ok<T> ok) {
-        (void) (*reinterpret_cast<T *>(this->_storage.data()) = std::move(ok._t));
-    }
-
-    void construct(Wrapper::Err<E> err) {
-        (void) (*reinterpret_cast<E *>(this->_storage.data()) = std::move(err._e));
-    }
-
-    template <typename _, typename U = typename std::decay<_>::type,
-              Utils::enable_if_t<!std::is_same<_, void>::value, bool> = true>
-    auto get() const -> const U & {
-        return *reinterpret_cast<const U *>(this->_storage.data());
-    }
-
-    template <typename _, typename U = typename std::decay<_>::type,
-              Utils::enable_if_t<!std::is_same<_, void>::value, bool> = true>
-    auto get() -> U & {
-        return *reinterpret_cast<U *>(this->_storage.data());
-    }
-
-    template <typename _, typename U = typename std::decay<_>::type,
-              Utils::enable_if_t<std::is_same<_, void>::value, bool> = true>
-    auto get() const -> void {}
-
-    template <typename S>
-    RESULT_MAYBE_UNUSED RESULT_NODISCARD bool holds_alternative() const {
-        return typeid(S).hash_code() == _type;
-    }
-};
-
-template <typename E>
-struct Storage<void, E> {
-    alignas(alignof(E)) std::array<std::uint8_t, sizeof(E)> _storage = { 0 };
-    std::size_t _type;
-
-    RESULT_MAYBE_UNUSED explicit Storage(const Wrapper::Ok<void> &t)
-        : _type{ typeid(Wrapper::Ok<void>).hash_code() } {
-        construct(t);
-    }
-
-    RESULT_MAYBE_UNUSED explicit Storage(const Wrapper::Err<E> &s)
-        : _type{ typeid(Wrapper::Err<E>).hash_code() } {
-        construct(s);
-    }
-
-    RESULT_MAYBE_UNUSED explicit Storage(Wrapper::Ok<void> &&t)
-        : _type{ typeid(Wrapper::Ok<void>).hash_code() } {
-        construct(std::move(t));
-    }
-
-    RESULT_MAYBE_UNUSED explicit Storage(Wrapper::Err<E> &&s)
-        : _type{ typeid(Wrapper::Err<E>).hash_code() } {
-        construct(std::move(s));
-    }
-
-    void construct(Wrapper::Ok<void> ok) { (void) ok; }
-
-    void construct(Wrapper::Err<E> err) {
-        (void) (*reinterpret_cast<E *>(this->_storage.data()) = std::move(err._e));
-    }
-
-    template <typename _, typename U = typename std::decay<_>::type,
-              Utils::enable_if_t<!std::is_same<_, void>::value, bool> = true>
-    auto get() const -> const U & {
-        return *reinterpret_cast<const U *>(this->_storage.data());
-    }
-
-    template <typename _, typename U = typename std::decay<_>::type,
-              Utils::enable_if_t<!std::is_same<_, void>::value, bool> = true>
-    auto get() -> U & {
-        return *reinterpret_cast<U *>(this->_storage.data());
-    }
-
-    template <typename _, typename U = typename std::decay<_>::type,
-              Utils::enable_if_t<std::is_same<_, void>::value, bool> = true>
-    auto get() const -> void {}
-
-    template <typename S>
-    RESULT_MAYBE_UNUSED RESULT_NODISCARD bool holds_alternative() const {
-        return typeid(S).hash_code() == _type;
-    }
+template <typename T, typename E, auto OS, auto ES>
+struct destruct_result<Result<T, E, OS, ES>> {
+    using ok_type [[maybe_unused]] = T;
+    using err_type [[maybe_unused]] = E;
 };
 
 template <typename T>
-struct Storage<T, void> {
-    alignas(alignof(T)) std::array<std::uint8_t, sizeof(T)> _storage = { 0 };
-    std::size_t _type;
+using nonvoid_value_t [[maybe_unused]] = std::enable_if_t<!std::is_void_v<T>, T>;
 
-    RESULT_MAYBE_UNUSED explicit Storage(const Wrapper::Ok<T> &s)
-        : _type{ typeid(Wrapper::Ok<T>).hash_code() } {
-        construct(s);
-    }
+template <typename T>
+using nonvoid_ref_t [[maybe_unused]] = std::enable_if_t<!std::is_void_v<T>, T &>;
 
-    RESULT_MAYBE_UNUSED explicit Storage(const Wrapper::Err<void> &e)
-        : _type{ typeid(Wrapper::Err<void>).hash_code() } {
-        construct(e);
-    }
+template <typename T>
+using nonvoid_cref_t [[maybe_unused]] = std::enable_if_t<!std::is_void_v<T>, const T &>;
 
-    RESULT_MAYBE_UNUSED explicit Storage(Wrapper::Ok<T> &&s)
-        : _type{ typeid(Wrapper::Ok<T>).hash_code() } {
-        construct(std::move(s));
-    }
+// =================================================================================================
+// Stored type resolve
+// =================================================================================================
 
-    RESULT_MAYBE_UNUSED explicit Storage(Wrapper::Err<void> &&e)
-        : _type{ typeid(Wrapper::Err<void>).hash_code() } {
-        construct(std::move(e));
-    }
-
-    void construct(Wrapper::Ok<T> ok) {
-        (void) (*reinterpret_cast<T *>(this->_storage.data()) = std::move(ok._t));
-    }
-
-    void construct(Wrapper::Err<void> err) { (void) err; }
-
-    template <typename _, typename U = typename std::decay<_>::type,
-              Utils::enable_if_t<!std::is_same<_, void>::value, bool> = true>
-    auto get() const -> const U & {
-        return *reinterpret_cast<const U *>(this->_storage.data());
-    }
-
-    template <typename _, typename U = typename std::decay<_>::type,
-              Utils::enable_if_t<!std::is_same<_, void>::value, bool> = true>
-    auto get() -> U & {
-        return *reinterpret_cast<U *>(this->_storage.data());
-    }
-
-    template <typename _, typename U = typename std::decay<_>::type,
-              Utils::enable_if_t<std::is_same<_, void>::value, bool> = true>
-    auto get() const -> void {}
-
-    template <typename S>
-    RESULT_MAYBE_UNUSED RESULT_NODISCARD bool holds_alternative() const {
-        return typeid(S).hash_code() == _type;
-    }
-};
-
-template <>
-struct Storage<void, void> {
-    std::size_t _type;
-
-    RESULT_MAYBE_UNUSED explicit Storage(const Wrapper::Ok<void> &t)
-        : _type{ typeid(Wrapper::Ok<void>).hash_code() } {
-        std::ignore = t;
-    }
-
-    RESULT_MAYBE_UNUSED explicit Storage(const Wrapper::Err<void> &e)
-        : _type{ typeid(Wrapper::Err<void>).hash_code() } {
-        std::ignore = e;
-    }
-
-    RESULT_MAYBE_UNUSED explicit Storage(Wrapper::Ok<void> &&t)
-        : _type{ typeid(Wrapper::Ok<void>).hash_code() } {
-        std::ignore = t;
-    }
-
-    RESULT_MAYBE_UNUSED explicit Storage(Wrapper::Err<void> &&e)
-        : _type{ typeid(Wrapper::Err<void>).hash_code() } {
-        std::ignore = e;
-    }
-
-    RESULT_MAYBE_UNUSED void construct(Wrapper::Ok<void> ok) { (void) ok; }
-
-    RESULT_MAYBE_UNUSED void construct(Wrapper::Err<void> err) { (void) err; }
-
-    template <typename _, typename U = std::decay<_>>
-    void get() {}
-
-    template <typename S>
-    RESULT_MAYBE_UNUSED RESULT_NODISCARD bool holds_alternative() const {
-        return typeid(S).hash_code() == _type;
-    }
-};
-
-}  // namespace Utils
-
-namespace Wrapper {
-template <typename S>
-struct Get;
-
-template <>
-struct Get<Ok<void>> {
-    template <typename _>
-    static Ok<void> get(const Result<void, _> &r) {
-        std::ignore = r;
-        return Ok<void>{};
-    }
+template <typename T>
+struct stored_type {
+    using type = T;
 };
 
 template <typename T>
-struct Get<Ok<T>> {
-    template <typename _>
-    static Ok<T> get(const Result<T, _> &r) {
-        auto ok = r.storage().template get<T>();
-        return Ok<T>(std::move(ok));
-    }
+struct stored_type<T &> {
+    using type = T *;
 };
 
-template <>
-struct Get<Err<void>> {
-    template <typename _>
-    static Err<void> get(const Result<_, void> &r) {
-        std::ignore = r;
-        return Err<void>{};
-    }
-};
-
-template <typename E>
-struct Get<Err<E>> {
-    template <typename _>
-    static Err<E> get(const Result<_, E> &r) {
-        auto err = r.storage().template get<E>();
-        return Err<E>(std::move(err));
-    }
-};
-}  // namespace Wrapper
-
-/**
- * Implementation namespace of transformer functions
- */
-namespace Impl {
-
-// map
 template <typename T>
-struct Map;
+using stored_type_t = typename stored_type<T>::type;
 
-template <typename R, typename C, typename... Args>
-struct Map<R (C::*)(Args...) const> : public Map<R(Args...)> {};
-
-template <typename R, typename C, typename Args>
-struct Map<R (C::*)(Args...)> : public Map<R(Args...)> {};
-
-template <typename R, typename Arg>
-struct Map<R(Arg)> {
-    template <typename T, typename E, typename F,
-              Utils::enable_if_t<Utils::is_convertible<T, Arg>::value, bool> = true>
-    RESULT_MAYBE_UNUSED static Result<R, E> map(const Result<T, E> &r RESULT_MAYBE_UNUSED, F fun) {
-        auto ok = r.storage().template get<T>();
-        auto ret = fun(std::move(ok));
-        return Ok(std::move(ret));
-    }
-};
-
-template <typename Arg>
-struct Map<void(Arg)> {
-    template <typename T, typename E, typename F,
-              Utils::enable_if_t<Utils::is_convertible<T, Arg>::value, bool> = true>
-    RESULT_MAYBE_UNUSED static Result<void, E> map(const Result<T, E> &r RESULT_MAYBE_UNUSED,
-                                                   F fun) {
-        auto ok = r.storage().template get<T>();
-        fun(std::move(ok));
-        return Wrapper::Ok<void>();
-    }
-};
-
-template <typename R>
-struct Map<R(void)> {
-    template <typename T, typename E, typename F>
-    RESULT_MAYBE_UNUSED static Result<R, E> map(const Result<T, E> &r RESULT_MAYBE_UNUSED, F fun) {
-        auto ret = fun();
-        return Ok(std::move(ret));
-    }
-};
-
-template <>
-struct Map<void(void)> {
-    template <typename T, typename E, typename F>
-    RESULT_MAYBE_UNUSED static Result<void, E> map(const Result<T, E> &r RESULT_MAYBE_UNUSED,
-                                                   F fun) {
-        fun();
-        return Wrapper::Ok<void>();
-    }
-};
-
-// map err
 template <typename T>
-struct MapErr;
+[[maybe_unused]] inline constexpr bool is_ref_v = std::is_lvalue_reference_v<T>;
 
-template <typename R, typename C, typename... Args>
-struct MapErr<R (C::*)(Args...) const> : public MapErr<R(Args...)> {};
-
-template <typename R, typename C, typename... Args>
-struct MapErr<R (C::*)(Args...)> : public MapErr<R(Args...)> {};
-
-template <typename R, typename Arg>
-struct MapErr<R(Arg)> {
-    template <typename T, typename E, typename F,
-              Utils::enable_if_t<Utils::is_convertible<E, Arg>::value, bool> = true>
-    RESULT_MAYBE_UNUSED static Result<T, R> map_err(const Result<T, E> &r RESULT_MAYBE_UNUSED,
-                                                    F fun) {
-        auto err = r.storage().template get<E>();
-        auto ret = fun(std::move(err));
-
-        return Err(std::move(ret));
+template <typename T>
+[[maybe_unused]] static stored_type_t<T> store_value(T value) {
+    if constexpr (std::is_lvalue_reference_v<T>) {
+        return std::addressof(value);
+    } else {
+        return std::move(value);
     }
-};
-
-template <typename Arg>
-struct MapErr<void(Arg)> {
-    template <typename T, typename E, typename F,
-              Utils::enable_if_t<Utils::is_convertible<E, Arg>::value, bool> = true>
-    RESULT_MAYBE_UNUSED static Result<T, void> map_err(const Result<T, E> &r RESULT_MAYBE_UNUSED,
-                                                       F fun) {
-        auto err = r.storage().template get<E>();
-        fun(std::move(err));
-
-        return Wrapper::Err<void>();
-    }
-};
-
-template <typename R>
-struct MapErr<R(void)> {
-    template <typename T, typename E, typename F>
-    RESULT_MAYBE_UNUSED static Result<T, R> map_err(const Result<T, E> &r RESULT_MAYBE_UNUSED,
-                                                    F fun) {
-        auto ret = fun();
-        return Err(std::move(ret));
-    }
-};
-
-template <>
-struct MapErr<void(void)> {
-    template <typename T, typename E, typename F>
-    RESULT_MAYBE_UNUSED static Result<T, void> map_err(const Result<T, E> &r RESULT_MAYBE_UNUSED,
-                                                       F fun) {
-        fun();
-        return Wrapper::Err<void>();
-    }
-};
-
-}  // namespace Impl
-
-/**
- * SFINAE resolver namespace
- */
-namespace Resolve {
-
-// map
-template <typename F>
-struct Map : public Impl::Map<decltype(&F::operator())> {};
-
-template <typename R, typename... Args>
-struct Map<R (*)(Args...)> : public Impl::Map<R(Args...)> {};
-
-template <typename R, typename C, typename... Args>
-struct Map<R (C::*)(Args...)> : public Impl::Map<R(Args...)> {};
-
-template <typename R, typename C, typename... Args>
-struct Map<R (C::*)(Args...) const> : public Impl::Map<R(Args...)> {};
-
-template <typename R, typename... Args>
-struct Map<std::function<R(Args...)>> : public Impl::Map<R(Args...)> {};
-
-// map error
-template <typename F>
-struct MapErr : public Impl::MapErr<decltype(&F::operator())> {};
-
-template <typename R, typename... Args>
-struct MapErr<R (*)(Args...)> : public Impl::MapErr<R(Args...)> {};
-
-template <typename R, typename C, typename... Args>
-struct MapErr<R (C::*)(Args...)> : public Impl::MapErr<R(Args...)> {};
-
-template <typename R, typename C, typename... Args>
-struct MapErr<R (C::*)(Args...) const> : public Impl::MapErr<R(Args...)> {};
-
-template <typename R, typename... Args>
-struct MapErr<std::function<R(Args...)>> : public Impl::MapErr<R(Args...)> {};
-
-}  // namespace Resolve
-
-namespace Proxy {
-template <typename T, typename E, typename F, typename R = typename Utils::result_of<F>::type>
-static Result<R, E> map(const Result<T, E> &res, F fun) {
-    return Resolve::Map<F>::map(res, fun);
 }
 
-template <typename T, typename E, typename F, typename R = typename Utils::result_of<F>::type>
-static Result<T, R> map_err(const Result<T, E> &res, F fun) {
-    return Resolve::MapErr<F>::map_err(res, fun);
+// =================================================================================================
+// Reference handling
+// =================================================================================================
+
+template <typename T>
+[[maybe_unused]] static T unwrap_stored(stored_type_t<T> &value) {
+    if constexpr (std::is_lvalue_reference_v<T>) {
+        return *value;
+    } else {
+        return std::move(value);
+    }
 }
 
-}  // namespace Proxy
+template <typename T>
+[[maybe_unused]] static std::add_lvalue_reference_t<std::remove_reference_t<T>> unwrap_stored_ref(
+    stored_type_t<T> &value) {
+    if constexpr (std::is_lvalue_reference_v<T>) {
+        return *value;
+    } else {
+        return value;
+    }
+}
 
-template <typename T, typename E>
-struct Result {
+template <typename T>
+[[maybe_unused]] static std::add_lvalue_reference_t<const std::remove_reference_t<T>>
+unwrap_stored_cref(const stored_type_t<T> &value) {
+    if constexpr (std::is_lvalue_reference_v<T>) {
+        return *value;
+    } else {
+        return value;
+    }
+}
+
+// =================================================================================================
+// Internal type instance storage
+// =================================================================================================
+
+template <typename T, auto Sentinel>
+class ok_optional_storage {
+   protected:
+    using public_type [[maybe_unused]] = T;
+    using stored_type [[maybe_unused]] = stored_type_t<T>;
+
+    tiny::optional<stored_type, Sentinel> m_ok;
+
+    ok_optional_storage() = default;
+
+    [[maybe_unused]] explicit ok_optional_storage(wrapper::Ok<T> ok) {
+        if constexpr (std::is_lvalue_reference_v<T>) {
+            m_ok = ok.value;  // T*
+        } else {
+            m_ok = std::move(ok.value);  // T
+        }
+
+        assert(m_ok.has_value() && "Ok value equals the configured empty sentinel.");
+    }
+
+    [[maybe_unused]] [[nodiscard]] bool has_ok() const noexcept { return m_ok.has_value(); }
+
+    [[maybe_unused]] [[nodiscard]] decltype(auto) ok_ref() & {
+        if constexpr (std::is_lvalue_reference_v<T>) {
+            return **m_ok;  // T&
+        } else {
+            return (*m_ok);  // T&
+        }
+    }
+
+    [[maybe_unused]] [[nodiscard]] decltype(auto) ok_ref() const & {
+        if constexpr (std::is_lvalue_reference_v<T>) {
+            return **m_ok;  // T&
+        } else {
+            return (*m_ok);  // const T&
+        }
+    }
+
+    [[maybe_unused]] [[nodiscard]] decltype(auto) ok_take() && {
+        if constexpr (std::is_lvalue_reference_v<T>) {
+            return **m_ok;  // T&
+        } else {
+            return std::move(*m_ok);  // T
+        }
+    }
+};
+
+template <typename E, auto Sentinel>
+class err_optional_storage {
+   protected:
+    using public_type [[maybe_unused]] = E;
+    using stored_type [[maybe_unused]] = stored_type_t<E>;
+
+    tiny::optional<stored_type, Sentinel> m_err;
+
+    err_optional_storage() = default;
+
+    [[maybe_unused]] explicit err_optional_storage(wrapper::Err<E> err) {
+        if constexpr (std::is_lvalue_reference_v<E>) {
+            m_err = err.value;  // E*
+        } else {
+            m_err = std::move(err.value);  // E
+        }
+
+        assert(m_err.has_value() && "Err value equals the configured empty sentinel.");
+    }
+
+    [[maybe_unused]] [[nodiscard]] bool has_err() const noexcept { return m_err.has_value(); }
+
+    [[maybe_unused]] [[nodiscard]] decltype(auto) err_ref() & {
+        if constexpr (std::is_lvalue_reference_v<E>) {
+            return **m_err;
+        } else {
+            return (*m_err);
+        }
+    }
+
+    [[maybe_unused]] [[nodiscard]] decltype(auto) err_ref() const & {
+        if constexpr (std::is_lvalue_reference_v<E>) {
+            return **m_err;
+        } else {
+            return (*m_err);
+        }
+    }
+
+    [[maybe_unused]] [[nodiscard]] decltype(auto) err_take() && {
+        if constexpr (std::is_lvalue_reference_v<E>) {
+            return **m_err;
+        } else {
+            return std::move(*m_err);
+        }
+    }
+};
+
+template <typename T>
+[[maybe_unused]] inline constexpr bool is_result_ref_v = std::is_lvalue_reference_v<T>;
+
+template <typename T>
+using result_ref_base_t [[maybe_unused]] = std::remove_reference_t<T>;
+
+// =================================================================================================
+// Sentinel type values
+// =================================================================================================
+
+template <auto V>
+[[maybe_unused]] inline constexpr bool is_default_sentinel_v =
+    std::is_same_v<std::decay_t<decltype(V)>, tiny::UseDefaultType> && V == tiny::UseDefaultValue;
+
+template <typename T, auto Sentinel>
+[[maybe_unused]] inline constexpr bool sentinel_type_compatible_v =
+    is_default_sentinel_v<Sentinel> || std::is_convertible_v<decltype(Sentinel), T>;
+
+template <typename T, auto Sentinel>
+[[maybe_unused]] inline constexpr bool sentinel_not_void_v =
+    !std::is_void_v<T> || is_default_sentinel_v<Sentinel>;
+
+// =================================================================================================
+// Exception
+// =================================================================================================
+
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+class bad_result_access : public std::exception {
+   public:
+    const char *what() const noexcept override { return "Bad Result access!"; }
+};
+#endif
+
+}  // namespace detail
+
+// =================================================================================================
+// Result<T, E> where T and E are void - degenerate bool storage case
+// =================================================================================================
+
+template <>
+class [[nodiscard]] Result<void, void> {
+   public:
+    using ok_type [[maybe_unused]] = void;
+    using err_type [[maybe_unused]] = void;
+
    private:
-    Utils::Storage<T, E> _storage;
+    bool m_ok;
 
    public:
-    /**
-     * @brief   Allows the construction of a Result<T, E> instance through
-     * rvalue's of type Ok<T> and Err<E>.
-     */
-    RESULT_NODISCARD Result(Wrapper::Ok<T> &&s) noexcept : _storage{ std::move(s) } {}
-    RESULT_NODISCARD Result(Wrapper::Err<E> &&s) noexcept : _storage{ std::move(s) } {}
+    Result(wrapper::Ok<void>) noexcept : m_ok{true} {}
+    Result(wrapper::Err<void>) noexcept : m_ok{false} {}
+    Result(const Result &) = default;
+    Result(Result &&) noexcept = default;
 
-    /**
-     * @brief   Allows the construction of a Result<T, E> instance through an
-     * rvalue of type Result<T, E>.
-     */
-    RESULT_NODISCARD Result(Result<T, E> &&o) noexcept : _storage{ std::move(o._storage) } {}
-    RESULT_NODISCARD Result<T, E> &operator=(Result<T, E> &&o) noexcept {
-        this->_storage = std::move(o._storage);
-        return *this;
+    Result &operator=(const Result &) = default;
+    Result &operator=(Result &&) noexcept = default;
+
+    ~Result() = default;
+
+    // =============================================================================================
+    // member functions
+    // =============================================================================================
+
+    [[nodiscard]] bool is_ok() const noexcept { return m_ok; }
+
+    [[nodiscard]] bool is_err() const noexcept { return !m_ok; }
+
+    [[maybe_unused]] void unwrap() const {
+        if (!is_ok())
+            RESULT_ERROR("Tried to unwrap a result containing an error");
     }
 
-    /**
-     * @brief   Results should not be copyable.
-     */
-    RESULT_NODISCARD Result(const Result &o) = delete;
-    RESULT_NODISCARD Result<T, E> &operator=(const Result &o) noexcept = delete;
-
-    /**
-     * @brief   Reference to the underlying container storing either an instance
-     * of T or E.
-     */
-    RESULT_MAYBE_UNUSED decltype(Result<T, E>::_storage) &storage() { return this->_storage; }
-
-    RESULT_MAYBE_UNUSED const decltype(Result<T, E>::_storage) &storage() const {
-        return this->_storage;
+    [[maybe_unused]] void unwrap_err() const {
+        if (!is_err())
+            RESULT_ERROR("Tried to unwrap an error containing a result");
     }
 
-    /**
-     * @brief   Queries information about whether the contained result is Ok<T> or
-     * Err<E>
-     */
-    RESULT_MAYBE_UNUSED RESULT_NODISCARD bool is_ok() const {
-        return storage().template holds_alternative<Wrapper::Ok<T>>();
+    [[maybe_unused]] void unwrap_unchecked() const {}
+
+    [[maybe_unused]] void unwrap_err_unchecked() const {}
+
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    [[maybe_unused]] decltype(auto) unwrap_or_throw() && {
+        if (is_ok())
+            return std::move(*this).unwrap_unchecked();
+
+        throw detail::bad_result_access{};
+    }
+#endif
+
+    [[maybe_unused]] void expect(const std::string &message) const {
+        if (!is_ok())
+            RESULT_ERROR(message);
     }
 
-    RESULT_MAYBE_UNUSED RESULT_NODISCARD bool is_err() const {
-        return storage().template holds_alternative<Wrapper::Err<E>>();
-    }
+    template <typename Fn>
+    [[maybe_unused]] auto map(Fn &&fn) && {
+        using Ret = std::invoke_result_t<Fn>;
 
-    /**
-     * @brief   Only available if the type T of Ok<T> is not void.
-     *          Moves the contained instance of type T when the Result<T, E>
-     * contains Ok<T>. However in case of containing an Err<E> it will fail.
-     */
-    template <typename _ = typename std::decay<T>::type,
-              typename R = typename std::enable_if<!std::is_same<_, void>::value, _>::type>
-    RESULT_MAYBE_UNUSED R unwrap() {
         if (is_ok()) {
-            return std::move(storage().template get<R>());
+            if constexpr (std::is_void_v<Ret>) {
+                std::invoke(std::forward<Fn>(fn));
+                return Result<void, void>(Ok());
+            } else {
+                return Result<Ret, void>(Ok(std::invoke(std::forward<Fn>(fn))));
+            }
         }
 
-        RESULT_ERROR("Tried to unwrap a result containing an error");
-    }
-
-    /**
-     * @brief   Only available if the type E of Err<E> is not void.
-     *          Moves the contained instance of type E when the Result<T, E>
-     * contains Err<E>. However in case of containing an Ok<T> it will fail.
-     */
-    template <typename _ = typename std::decay<E>::type,
-              typename R = typename std::enable_if<!std::is_same<_, void>::value, _>::type>
-    RESULT_MAYBE_UNUSED R unwrap_err() {
-        if (is_err()) {
-            return std::move(storage().template get<R>());
-        }
-
-        RESULT_ERROR("Tried to unwrap an error containing a result");
-    }
-
-    /**
-     * @brief   Unchecked variants of unwrap and unwrap_err.
-     *          These should only be used if we have absolute certainty abut the
-     * desired result. Moves the contained T (or E) from the result.
-     */
-    template <typename _ = typename std::decay<E>::type,
-              typename R = typename std::enable_if<!std::is_same<_, void>::value, _>::type>
-    RESULT_MAYBE_UNUSED R unwrap_unchecked() {
-        return std::move(storage().template get<R>());
-    }
-
-    template <typename _ = typename std::decay<E>::type,
-              typename R = typename std::enable_if<!std::is_same<_, void>::value, _>::type>
-    RESULT_MAYBE_UNUSED R unwrap_err_unchecked() {
-        return std::move(storage().template get<R>());
-    }
-
-    /**
-     * @brief   Only available if the type T of Ok<T> is not void.
-     *          Returns a reference to the contained instance of type T when the
-     * Result<T, E> is Ok<T>. However in case of Err<E> it will return a reference
-     * to the explicitly stated reference of type T.
-     */
-    template <typename _ = typename std::decay<T>::type,
-              typename R = typename std::enable_if<!std::is_same<_, void>::value, _>::type>
-    RESULT_MAYBE_UNUSED R unwrap_or(const _ &t) {
-        if (is_ok()) {
-            return std::move(storage().template get<T>());
-        }
-
-        return t;
-    }
-
-    /**
-     * @brief   Only available if type T of Ok<T> can be default constructed and
-     * if T is not void. In case the Result<T, E> contains Err<E> this function
-     * returns a default constructed instance of T, else it moves the contained
-     * instance of T.
-     */
-    template <typename _ = typename std::decay<T>::type,
-              typename R = typename std::enable_if<!std::is_same<_, void>::value, _>::type,
-              Utils::enable_if_t<std::is_default_constructible<R>::value, bool> = true>
-    RESULT_MAYBE_UNUSED R unwrap_or_default() {
-        if (is_err()) {
-            return R{};
-        }
-
-        return std::move(storage().template get<R>());
-    }
-
-    /**
-     * @brief   Only available if the type T of Ok<T> is not void.
-     *          Moves the contained instance of T when the Result<T, E> contains
-     * Ok<T>. However in case of Err<E> it will fail like unwrap() but display the
-     *          specific given string.
-     */
-    template <typename _ = typename std::decay<T>::type,
-              typename R = typename std::enable_if<!std::is_same<_, void>::value, _>::type>
-    RESULT_MAYBE_UNUSED R expect(const std::string s) {
-        if (is_ok()) {
-            return std::move(storage().template get<R>());
-        }
-
-        RESULT_ERROR(s);
-    }
-
-    /**
-     * @brief   Transforms a Result<T, E> to Result<R, E>.
-     *          If the result contains an Err<E> nothing happens.
-     *          The function used for the mapping must either discard T (no arg)
-     * or take exactly one argument which T needs to be implicit convertible to.
-     *          Consumes the underlying Result<T, E>.
-     */
-    template <typename F, typename R = typename Utils::result_of<F>::type,
-              Utils::enable_if_t<!Utils::is_result<R>::value, bool> = true>
-    RESULT_MAYBE_UNUSED Result<R, E> map(F fun) {
-        if (is_ok()) {
-            return Proxy::map(*this, fun);
-        }
-
-        // constructs a Result<R, E> from Err<E> contained in Result<T, E>
-        return Wrapper::Get<Wrapper::Err<E>>::get(*this);
-    }
-
-    /**
-     * @brief   Transforms a Result<T, E> to Result<T, R>.
-     *          If the result contains an Ok<T> nothing happens.
-     *          The function used for the mapping must either discard E (no arg)
-     * or take exactly one argument which E needs to be implicit convertible to.
-     *          Consumes the underlying Result<T, E>.
-     */
-    template <typename F, typename R = typename Utils::result_of<F>::type,
-              Utils::enable_if_t<!Utils::is_result<R>::value, bool> = true>
-    RESULT_MAYBE_UNUSED Result<T, R> map_err(F fun) {
-        if (is_err()) {
-            return Proxy::map_err(*this, fun);
-        }
-
-        // constructs a Result<R, E> from Err<E> contained in Result<T, E>
-        return Wrapper::Get<Wrapper::Ok<T>>::get(*this);
-    }
-
-    /**
-     * @brief   Transforms a Result<T, E> to Result<R, T>.
-     *          If the result contains an Err<E> the specified instance of type R
-     * will be returned via reference, else the transformation is applied and the
-     * result Consumes the underlying base Result<T, E>.
-     */
-    template <typename F, typename R = typename Utils::result_of<F>::type,
-              Utils::enable_if_t<!std::is_same<R, void>::value, bool> = true>
-    RESULT_MAYBE_UNUSED R map_or(F fun, R r) {
-        if (is_ok()) {
-            return std::move(Proxy::map(*this, fun).storage().template get<R>());
-        }
-
-        return r;
-    }
-
-    /**
-     * @brief   Transforms a Result<T, E> to R if the result contains an Ok<T>.
-     *          Transforms a Result<T, E> to R if the result contains an Err<E>.
-     *          These functions do not need to be the same.
-     *          Consumes the underlying base Result<T, E>.
-     */
-    template <
-        typename F, typename O, typename R = typename Utils::result_of<F>::type,
-        Utils::enable_if_t<std::is_same<R, typename Utils::result_of<O>::type>::value, bool> = true>
-    RESULT_MAYBE_UNUSED R map_or_else(F fun, O other) {
-        if (is_ok()) {
-            return std::move(Proxy::map(*this, fun).storage().template get<R>());
+        if constexpr (std::is_void_v<Ret>) {
+            return Result<void, void>(Err());
         } else {
-            return std::move(Proxy::map_err(*this, other).storage().template get<R>());
+            return Result<Ret, void>(Err());
         }
     }
 
-    /**
-     * @brief   Transforms a Result<T, E> to Result<U, E> is the result contains
-     * OK<T> else it returns Err<E> contained in the result. Consumes the
-     * underlying Result<T, E>.
-     */
-    template <typename F, typename R = typename Utils::result_of<F>::type,
-              typename U = typename Utils::destruct_result<R>::Ok>
-    RESULT_MAYBE_UNUSED Result<U, E> and_then(F fun) {
-        if (is_ok()) {
-            return std::move(Proxy::map(*this, fun).storage().template get<R>());
-        }
+    template <typename ErrFn>
+    [[maybe_unused]] auto map_err(ErrFn &&fn) && {
+        using ErrRet = std::invoke_result_t<ErrFn>;
 
-        // constructs Result<U, E> from Err<E>
-        return Wrapper::Get<Wrapper::Err<E>>::get(*this);
-    }
-
-    /**
-     * @brief   Transforms a Result<T, E> to Result<U, E> is the result contains
-     * OK<T> else it returns Err<E> contained in the result. Consumes the
-     * underlying Result<T, E>.
-     */
-    template <typename F, typename R = typename Utils::result_of<F>::type,
-              typename U = typename Utils::destruct_result<R>::Err>
-    RESULT_MAYBE_UNUSED Result<T, U> or_else(F fun) {
         if (is_err()) {
-            return std::move(Proxy::map_err(*this, fun).storage().template get<R>());
+            if constexpr (std::is_void_v<ErrRet>) {
+                std::invoke(std::forward<ErrFn>(fn));
+                return Result<void, void>(Err());
+            } else {
+                return Result<void, ErrRet>(Err(std::invoke(std::forward<ErrFn>(fn))));
+            }
         }
 
-        // constructs Result<U, E> from Err<E>
-        return Wrapper::Get<Wrapper::Ok<T>>::get(*this);
+        if constexpr (std::is_void_v<ErrRet>) {
+            return Result<void, void>(Ok());
+        } else {
+            return Result<void, ErrRet>(Ok());
+        }
     }
 
-    /**
-     * @brief   Only available if T is equality comparable.
-     *          Returns true if both Result<T, E> and Ok<T> contain Ok<T>
-     *          and the instances of T are equal, else false.
-     */
-    template <typename U, Utils::enable_if_t<Utils::is_eq_comparable<U, T>::value, bool> = true>
-    bool operator==(const Wrapper::Ok<U> &other) {
-        return is_ok() && (storage().template get<T>() == other._t);
+    template <typename Fn, typename Ret>
+    [[maybe_unused]] Ret map_or(Fn &&fn, Ret fallback) && {
+        return is_ok() ? std::invoke(std::forward<Fn>(fn)) : std::move(fallback);
     }
 
-    /**
-     * @brief   Only available if E is equality comparable.
-     *          Returns true if both Result<T, E> and Err<E> contain Err<E>
-     *          and the instances of E are equal, else false.
-     */
-    template <typename U, Utils::enable_if_t<Utils::is_eq_comparable<U, E>::value, bool> = true>
-    bool operator==(const Wrapper::Err<U> &other) {
-        return is_err() && (storage().template get<E>() == other._e);
+    template <typename Fn, typename FnOther>
+    [[maybe_unused]] auto map_or_else(Fn &&fn, FnOther &&other) && {
+        return is_ok() ? std::invoke(std::forward<Fn>(fn))
+                       : std::invoke(std::forward<FnOther>(other));
     }
 
-    /**
-     * @brief   Only available if T but no E is equality comparable.
-     *          Returns true if both results contain Ok<T> and the instances of T
-     * are equal, else false.
-     */
-    template <typename F, typename G,
-              Utils::enable_if_t<Utils::is_eq_comparable<F, T>::value, bool> = true,
-              Utils::enable_if_t<!Utils::is_eq_comparable<G, E>::value, bool> = true>
-    bool operator==(const Result<F, G> &other) {
-        return (is_ok() && other.is_ok()) &&
-               (storage().template get<T>() == other.storage().template get<F>());
+    template <typename Fn>
+    [[maybe_unused]] auto and_then(Fn &&fn) && {
+        using Ret = std::invoke_result_t<Fn>;
+        static_assert(detail::is_result<Ret>::value,
+                      "and_then callback must return Result<U, void>.");
+        static_assert(std::is_same_v<typename detail::destruct_result<Ret>::err_type, void>,
+                      "and_then callback must preserve the error type void.");
+
+        if (is_ok())
+            return std::invoke(std::forward<Fn>(fn));
+
+        return Ret(Err());
     }
 
-    /**
-     * @brief   Only available if E but no T is equality comparable.
-     *          Returns true if both results contain Err<E> and the instances of E
-     * are equal, else false.
-     */
-    template <typename F, typename G,
-              Utils::enable_if_t<!Utils::is_eq_comparable<F, T>::value, bool> = true,
-              Utils::enable_if_t<Utils::is_eq_comparable<G, E>::value, bool> = true>
-    bool operator==(const Result<F, G> &other) {
-        return (is_err() && other.is_err()) &&
-               (storage().template get<E>() == other.storage().template get<G>());
+    template <typename ErrFn>
+    [[maybe_unused]] auto or_else(ErrFn &&fn) && {
+        using ErrRet = std::invoke_result_t<ErrFn>;
+        static_assert(detail::is_result<ErrRet>::value,
+                      "or_else callback must return Result<void, U>.");
+        static_assert(std::is_same_v<typename detail::destruct_result<ErrRet>::ok_type, void>,
+                      "or_else callback must preserve the ok type void.");
+
+        if (is_err())
+            return std::invoke(std::forward<ErrFn>(fn));
+
+        return ErrRet(Ok());
     }
 
-    /**
-     * @brief   Only available if T and E are equality comparable.
-     *          Returns true if both results contain Ok<T> and the instances of T
-     * are equal. Returns true if both results contain Err<E> and the instances of
-     * E are equal. Else returns false.
-     */
-    template <typename F, typename G,
-              Utils::enable_if_t<Utils::is_eq_comparable<F, T>::value, bool> = true,
-              Utils::enable_if_t<Utils::is_eq_comparable<G, E>::value, bool> = true>
-    bool operator==(const Result<F, G> &other) {
-        if (is_ok() && other.is_ok()) {
-            return storage().template get<T>() == other.storage().template get<F>();
+    bool operator==(const wrapper::Ok<void> &) const { return is_ok(); }
+
+    bool operator!=(const wrapper::Ok<void> &ok) const { return !(*this == ok); }
+
+    bool operator==(const wrapper::Err<void> &) const { return is_err(); }
+
+    bool operator!=(const wrapper::Err<void> &err) const { return !(*this == err); }
+
+    bool operator==(const Result<void, void> &other) const { return m_ok == other.m_ok; }
+
+    bool operator!=(const Result<void, void> &other) const { return !(*this == other); }
+};
+
+// =================================================================================================
+// Result<T, E> where E is void - enabling niche optimization
+// =================================================================================================
+
+template <typename T, auto OkSentinel, auto ErrSentinel>
+class [[nodiscard]] Result<T, void, OkSentinel, ErrSentinel>
+    : private detail::ok_optional_storage<T, OkSentinel> {
+    static_assert(!std::is_void_v<T>, "Use Result<void, void>.");
+    static_assert(!std::is_rvalue_reference_v<T>, "Result<T&&, void> is not supported.");
+
+    static_assert(detail::is_default_sentinel_v<ErrSentinel>,
+                  "ErrSentinel is meaningless for E == void.");
+
+    using storage = detail::ok_optional_storage<T, OkSentinel>;
+
+   public:
+    using ok_type [[maybe_unused]] = T;
+    using err_type [[maybe_unused]] = void;
+
+    Result(wrapper::Ok<T> ok) : storage(std::move(ok)) {}
+    Result(wrapper::Err<void>) : storage() {}
+    Result(const Result &) = default;
+    Result(Result &&) noexcept = default;
+
+    Result &operator=(const Result &) = default;
+    Result &operator=(Result &&) noexcept = default;
+
+    ~Result() = default;
+
+    // =============================================================================================
+    // member functions
+    // =============================================================================================
+
+    [[nodiscard]] bool is_ok() const noexcept { return storage::has_ok(); }
+
+    [[nodiscard]] bool is_err() const noexcept { return !storage::has_ok(); }
+
+    [[maybe_unused]] decltype(auto) unwrap_ref() & {
+        if (!is_ok())
+            RESULT_ERROR("Tried to unwrap_ref a result containing an error");
+
+        return storage::ok_ref();
+    }
+
+    [[maybe_unused]] decltype(auto) unwrap_ref() const & {
+        if (!is_ok())
+            RESULT_ERROR("Tried to unwrap_ref a result containing an error");
+
+        return storage::ok_ref();
+    }
+
+    [[maybe_unused]] decltype(auto) unwrap() && {
+        if (!is_ok())
+            RESULT_ERROR("Tried to unwrap a result containing an error");
+
+        return std::move(*this).storage::ok_take();
+    }
+
+    [[maybe_unused]] decltype(auto) unwrap_unchecked() && {
+        return std::move(*this).storage::ok_take();
+    }
+
+    [[maybe_unused]] void unwrap_err() const {
+        if (!is_err())
+            RESULT_ERROR("Tried to unwrap an error containing a result");
+    }
+
+    [[maybe_unused]] void unwrap_err_unchecked() const {}
+
+    template <typename U = T, typename = std::enable_if_t<!std::is_lvalue_reference_v<U> &&
+                                                          std::is_default_constructible_v<U>>>
+    [[maybe_unused]] T unwrap_or_default() && {
+        if (is_ok())
+            return std::move(*this).storage::ok_take();
+
+        return T{};
+    }
+
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    [[maybe_unused]] decltype(auto) unwrap_or_throw() && {
+        if (is_ok())
+            return std::move(*this).unwrap_unchecked();
+
+        throw detail::bad_result_access{};
+    }
+#endif
+
+    [[maybe_unused]] decltype(auto) expect(const std::string &message) && {
+        if (!is_ok())
+            RESULT_ERROR(message);
+
+        return std::move(*this).storage::ok_take();
+    }
+
+    template <typename Fn>
+    [[maybe_unused]] auto map(Fn &&fn) && {
+        using Arg = decltype(std::move(*this).storage::ok_take());
+        using Ret = std::invoke_result_t<Fn, Arg>;
+
+        if (is_ok()) {
+            if constexpr (std::is_void_v<Ret>) {
+                std::invoke(std::forward<Fn>(fn), std::move(*this).storage::ok_take());
+                return Result<void, void>(Ok());
+            } else {
+                return Result<Ret, void>(
+                    Ok(std::invoke(std::forward<Fn>(fn), std::move(*this).storage::ok_take())));
+            }
         }
 
-        if (is_err() && other.is_err()) {
-            return storage().template get<E>() == other.storage().template get<G>();
+        if constexpr (std::is_void_v<Ret>) {
+            return Result<void, void>(Err());
+        } else {
+            return Result<Ret, void>(Err());
+        }
+    }
+
+    template <typename ErrFn>
+    [[maybe_unused]] auto map_err(ErrFn &&fn) && {
+        using ErrRet = std::invoke_result_t<ErrFn>;
+
+        if (is_err()) {
+            if constexpr (std::is_void_v<ErrRet>) {
+                std::invoke(std::forward<ErrFn>(fn));
+                return Result<T, void, OkSentinel, ErrSentinel>(Err());
+            } else {
+                return Result<T, ErrRet>(Err(std::invoke(std::forward<ErrFn>(fn))));
+            }
         }
 
-        return false;
+        if constexpr (std::is_void_v<ErrRet>) {
+            return Result<T, void, OkSentinel, ErrSentinel>(
+                Ok(std::move(*this).storage::ok_take()));
+        } else {
+            return Result<T, ErrRet>(Ok(std::move(*this).storage::ok_take()));
+        }
     }
 
-    /**
-     * @brief   Only available if T is not-equal comparable.
-     *          Returns true if both Result<T, E> and Ok<T> contain Ok<T>
-     *          and the instances of T are equal, else false.
-     */
-    template <typename U, Utils::enable_if_t<Utils::is_ne_comparable<U, T>::value, bool> = true>
-    bool operator!=(const Wrapper::Ok<U> &other) {
-        return is_ok() && (storage().template get<T>() != other._t);
+    template <typename Fn, typename Ret>
+    [[maybe_unused]] auto map_or(Fn &&fn, Ret fallback) && {
+        if (is_ok())
+            return std::invoke(std::forward<Fn>(fn), std::move(*this).storage::ok_take());
+
+        return std::move(fallback);
     }
 
-    /**
-     * @brief   Only available if E is equality comparable.
-     *          Returns true if both Result<T, E> and Err<E> contain Err<E>
-     *          and the instances of E are equal, else false.
-     */
-    template <typename U, Utils::enable_if_t<Utils::is_ne_comparable<U, E>::value, bool> = true>
-    bool operator!=(const Wrapper::Err<U> &other) {
-        return is_err() && (storage().template get<E>() != other._e);
+    template <typename Fn, typename FnOther>
+    [[maybe_unused]] auto map_or_else(Fn &&fn, FnOther &&other) && {
+        if (is_ok())
+            return std::invoke(std::forward<Fn>(fn), std::move(*this).storage::ok_take());
+
+        return std::invoke(std::forward<FnOther>(other));
     }
 
-    /**
-     * @brief   Only available if T but no E is equality comparable.
-     *          Returns false if both results contain Ok<T> and the instances of T
-     * are equal, else true.
-     */
-    template <typename F, typename G,
-              Utils::enable_if_t<Utils::is_ne_comparable<F, T>::value, bool> = true,
-              Utils::enable_if_t<!Utils::is_ne_comparable<G, E>::value, bool> = true>
-    bool operator!=(const Result<F, G> &other) {
-        return (is_ok() && other.is_ok()) &&
-               (storage().template get<T>() != other.storage().template get<F>());
+    template <typename Fn>
+    [[maybe_unused]] auto and_then(Fn &&fn) && {
+        using Arg = decltype(std::move(*this).storage::ok_take());
+        using Ret = std::invoke_result_t<Fn, Arg>;
+
+        static_assert(detail::is_result<Ret>::value,
+                      "and_then callback must return Result<U, void>.");
+        static_assert(std::is_same_v<typename detail::destruct_result<Ret>::err_type, void>,
+                      "and_then callback must preserve the error type void.");
+
+        if (is_ok())
+            return std::invoke(std::forward<Fn>(fn), std::move(*this).storage::ok_take());
+
+        return Ret(Err());
     }
 
-    /**
-     * @brief   Only available if E but no T is equality comparable.
-     *          Returns false if both results contain Err<E> and the instances of
-     * E are equal, else true.
-     */
-    template <typename F, typename G,
-              Utils::enable_if_t<!Utils::is_ne_comparable<F, T>::value, bool> = true,
-              Utils::enable_if_t<Utils::is_ne_comparable<G, E>::value, bool> = true>
-    bool operator!=(const Result<F, G> &other) {
-        return (is_err() && other.is_err()) &&
-               (storage().template get<E>() != other.storage().template get<G>());
+    template <typename ErrFn>
+    [[maybe_unused]] auto or_else(ErrFn &&fn) && {
+        using ErrRet = std::invoke_result_t<ErrFn>;
+
+        static_assert(detail::is_result<ErrRet>::value,
+                      "or_else callback must return Result<T, U>.");
+        static_assert(std::is_same_v<typename detail::destruct_result<ErrRet>::ok_type, T>,
+                      "or_else callback must preserve the ok type T.");
+
+        if (is_err())
+            return std::invoke(std::forward<ErrFn>(fn));
+
+        return ErrRet(Ok(std::move(*this).storage::ok_take()));
     }
 
-    /**
-     * @brief   Only available if T and E are not-equal comparable.
-     *          Returns true if this result contains Ok<T>, other contains Ok<F>,
-     *          and the instance of T is not equal to the instance of F.
-     *          Returns true if this result contains Err<E>, other contains
-     * Err<G>, and the instance of E is not equal to instance of G. Returns false
-     * otherwise.
-     */
-    template <typename F, typename G,
-              Utils::enable_if_t<Utils::is_ne_comparable<F, T>::value, bool> = true,
-              Utils::enable_if_t<Utils::is_ne_comparable<G, E>::value, bool> = true>
-    bool operator!=(const Result<F, G> &other) {
-        if (is_ok() && other.is_ok()) {
-            return storage().template get<T>() != other.storage().template get<F>();
+    bool operator==(const wrapper::Ok<T> &ok) const {
+        if (!is_ok())
+            return false;
+
+        if constexpr (std::is_lvalue_reference_v<T>) {
+            return storage::ok_ref() == *ok.value;
+        } else {
+            return storage::ok_ref() == ok.value;
+        }
+    }
+
+    bool operator!=(const wrapper::Ok<T> &ok) const {
+        return !(*this == ok);  // keep as is
+    }
+
+    bool operator==(const wrapper::Err<void> &) const { return is_err(); }
+
+    bool operator!=(const wrapper::Err<void> &err) const {
+        return !(*this == err);  // keep as is
+    }
+
+    template <typename U, typename G, auto OS, auto ES>
+    bool operator==(const Result<U, G, OS, ES> &other) const {
+        if (is_ok() != other.is_ok())
+            return false;
+
+        if (is_ok())
+            return unwrap_ref() == other.unwrap_ref();
+
+        if constexpr (std::is_void_v<G>) {
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    template <typename U, typename G, auto OS, auto ES>
+    bool operator!=(const Result<U, G, OS, ES> &other) const {
+        return !(*this == other);  // keep as is
+    }
+};
+
+// =================================================================================================
+// Result<T, E> where T is void - enabling niche optimization
+// =================================================================================================
+
+template <typename E, auto OkSentinel, auto ErrSentinel>
+class [[nodiscard]] Result<void, E, OkSentinel, ErrSentinel>
+    : private detail::err_optional_storage<E, ErrSentinel> {
+    static_assert(!std::is_void_v<E>, "Use Result<void, void>.");
+    static_assert(!std::is_rvalue_reference_v<E>, "Result<void, E&&> is not supported.");
+    static_assert(detail::is_default_sentinel_v<OkSentinel>,
+                  "OkSentinel is meaningless for T == void.");
+
+    using storage = detail::err_optional_storage<E, ErrSentinel>;
+
+   public:
+    using ok_type [[maybe_unused]] = void;
+    using err_type [[maybe_unused]] = E;
+
+    Result(wrapper::Ok<void>) : storage() {}
+    Result(wrapper::Err<E> err) : storage(std::move(err)) {}
+    Result(const Result &) = default;
+    Result(Result &&) noexcept = default;
+
+    Result &operator=(const Result &) = default;
+    Result &operator=(Result &&) noexcept = default;
+
+    ~Result() = default;
+
+    // =============================================================================================
+    // member functions
+    // =============================================================================================
+
+    [[nodiscard]] bool is_ok() const noexcept { return !storage::has_err(); }
+
+    [[nodiscard]] bool is_err() const noexcept { return storage::has_err(); }
+
+    [[maybe_unused]] void unwrap() const {
+        if (!is_ok())
+            RESULT_ERROR("Tried to unwrap a result containing an error");
+    }
+
+    [[maybe_unused]] void unwrap_unchecked() const {}
+
+    [[maybe_unused]] decltype(auto) unwrap_err_ref() & {
+        if (!is_err())
+            RESULT_ERROR("Tried to unwrap_err_ref an error containing a result");
+
+        return storage::err_ref();
+    }
+
+    [[maybe_unused]] decltype(auto) unwrap_err_ref() const & {
+        if (!is_err())
+            RESULT_ERROR("Tried to unwrap_err_ref an error containing a result");
+
+        return storage::err_ref();
+    }
+
+    [[maybe_unused]] decltype(auto) unwrap_err() && {
+        if (!is_err())
+            RESULT_ERROR("Tried to unwrap_err an ok result");
+
+        return std::move(*this).storage::err_take();
+    }
+
+    [[maybe_unused]] decltype(auto) unwrap_err_unchecked() && {
+        return std::move(*this).storage::err_take();
+    }
+
+    [[maybe_unused]] void expect(const std::string &message) const {
+        if (!is_ok())
+            RESULT_ERROR(message);
+    }
+
+    template <typename Fn>
+    [[maybe_unused]] auto map(Fn &&fn) && {
+        using Ret = std::invoke_result_t<Fn>;
+
+        if (is_ok()) {
+            if constexpr (std::is_void_v<Ret>) {
+                std::invoke(std::forward<Fn>(fn));
+                return Result<void, E, OkSentinel, ErrSentinel>(Ok());
+            } else {
+                return Result<Ret, E>(Ok(std::invoke(std::forward<Fn>(fn))));
+            }
         }
 
-        if (is_err() && other.is_err()) {
-            return storage().template get<E>() != other.storage().template get<G>();
+        if constexpr (std::is_void_v<Ret>) {
+            return Result<void, E, OkSentinel, ErrSentinel>(
+                Err(std::move(*this).unwrap_err_unchecked()));
+        } else {
+            return Result<Ret, E>(Err(std::move(*this).unwrap_err_unchecked()));
+        }
+    }
+
+    template <typename ErrFn>
+    [[maybe_unused]] auto map_err(ErrFn &&fn) && {
+        using ErrArg = decltype(std::move(*this).storage::err_take());
+        using ErrRet = std::invoke_result_t<ErrFn, ErrArg>;
+
+        if (is_err()) {
+            if constexpr (std::is_void_v<ErrRet>) {
+                std::invoke(std::forward<ErrFn>(fn), std::move(*this).storage::err_take());
+                return Result<void, void>(Err());
+            } else {
+                return Result<void, ErrRet>(Err(
+                    std::invoke(std::forward<ErrFn>(fn), std::move(*this).storage::err_take())));
+            }
         }
 
-        return false;
+        if constexpr (std::is_void_v<ErrRet>) {
+            return Result<void, void>(Ok());
+        } else {
+            return Result<void, ErrRet>(Ok());
+        }
     }
 
-    /**
-     * @brief   Only available if T is less-than comparable.
-     *          Returns true if this result contains Ok<T>
-     *          and the instance of T is less than the instance in other,
-     *          else false.
-     */
-    template <typename U, Utils::enable_if_t<Utils::is_lt_comparable<U, T>::value, bool> = true>
-    bool operator<(const Wrapper::Ok<U> &other) {
-        return is_ok() && (storage().template get<T>() < other._t);
+    template <typename Fn, typename Ret>
+    [[maybe_unused]] auto map_or(Fn &&fn, Ret fallback) && {
+        if (is_ok())
+            return std::invoke(std::forward<Fn>(fn));
+
+        return std::move(fallback);
     }
 
-    /**
-     * @brief   Only available if E is less-than comparable.
-     *          Returns true if this result contains Err<E>
-     *          and the instance of E is less than the instance in other,
-     *          else false.
-     */
-    template <typename U, Utils::enable_if_t<Utils::is_lt_comparable<U, E>::value, bool> = true>
-    bool operator<(const Wrapper::Err<U> &other) {
-        return is_err() && (storage().template get<E>() < other._e);
+    template <typename Fn, typename FnOther>
+    [[maybe_unused]] auto map_or_else(Fn &&fn, FnOther &&other) && {
+        if (is_ok())
+            return std::invoke(std::forward<Fn>(fn));
+
+        return std::invoke(std::forward<FnOther>(other), std::move(*this).storage::err_take());
     }
 
-    /**
-     * @brief   Only available if T but no E is less-than comparable.
-     *          Returns true if both results contain Ok<T> and the instance of T
-     *          is less than the instance of F, else false.
-     */
-    template <typename F, typename G,
-              Utils::enable_if_t<Utils::is_lt_comparable<F, T>::value, bool> = true,
-              Utils::enable_if_t<!Utils::is_lt_comparable<G, E>::value, bool> = true>
-    bool operator<(const Result<F, G> &other) {
-        return (is_ok() && other.is_ok()) &&
-               (storage().template get<T>() < other.storage().template get<F>());
+    template <typename Fn>
+    [[maybe_unused]] auto and_then(Fn &&fn) && {
+        using Ret = std::invoke_result_t<Fn>;
+
+        static_assert(detail::is_result<Ret>::value, "and_then callback must return Result<U, E>.");
+        static_assert(std::is_same_v<typename detail::destruct_result<Ret>::err_type, E>,
+                      "and_then callback must preserve the error type E.");
+
+        if (is_ok())
+            return std::invoke(std::forward<Fn>(fn));
+
+        return Ret(Err(std::move(*this).storage::err_take()));
     }
 
-    /**
-     * @brief   Only available if E but no T is less-than comparable.
-     *          Returns true if both results contain Err<E> and the instance of E
-     *          is less than the instance of G, else false.
-     */
-    template <typename F, typename G,
-              Utils::enable_if_t<!Utils::is_lt_comparable<F, T>::value, bool> = true,
-              Utils::enable_if_t<Utils::is_lt_comparable<G, E>::value, bool> = true>
-    bool operator<(const Result<F, G> &other) {
-        return (is_err() && other.is_err()) &&
-               (storage().template get<E>() < other.storage().template get<G>());
+    template <typename ErrFn>
+    [[maybe_unused]] auto or_else(ErrFn &&fn) && {
+        using ErrArg = decltype(std::move(*this).storage::err_take());
+        using ErrRet = std::invoke_result_t<ErrFn, ErrArg>;
+
+        static_assert(detail::is_result<ErrRet>::value,
+                      "or_else callback must return Result<void, U>.");
+        static_assert(std::is_same_v<typename detail::destruct_result<ErrRet>::ok_type, void>,
+                      "or_else callback must preserve the ok type void.");
+
+        if (is_err())
+            return std::invoke(std::forward<ErrFn>(fn), std::move(*this).storage::err_take());
+
+        return ErrRet(Ok());
     }
 
-    /**
-     * @brief   Only available if T and E are less-than comparable.
-     *          Returns true if this result contains Ok<T>, other contains Ok<F>,
-     *          and the instance of T is less than the instance of F.
-     *          Returns true if this result contains Err<E>, other contains
-     * Err<G>, and the instance of E is less than the instance of G. Returns false
-     * otherwise.
-     */
-    template <typename F, typename G,
-              Utils::enable_if_t<Utils::is_lt_comparable<F, T>::value, bool> = true,
-              Utils::enable_if_t<Utils::is_lt_comparable<G, E>::value, bool> = true>
-    bool operator<(const Result<F, G> &other) {
-        if (is_ok() && other.is_ok()) {
-            return storage().template get<T>() < other.storage().template get<F>();
+    bool operator==(const wrapper::Ok<void> &) const { return is_ok(); }
+
+    bool operator!=(const wrapper::Ok<void> &ok) const {
+        return !(*this == ok);  // keep as is
+    }
+
+    bool operator==(const wrapper::Err<E> &err) const {
+        if (!is_err())
+            return false;
+
+        if constexpr (std::is_lvalue_reference_v<E>) {
+            return storage::err_ref() == *err.value;
+        } else {
+            return storage::err_ref() == err.value;
+        }
+    }
+
+    bool operator!=(const wrapper::Err<E> &err) const {
+        return !(*this == err);  // keep as is
+    }
+
+    template <typename U, typename G, auto OS, auto ES>
+    bool operator==(const Result<U, G, OS, ES> &other) const {
+        if (is_ok() != other.is_ok())
+            return false;
+
+        if (is_ok()) {
+            if constexpr (std::is_void_v<U>) {
+                return true;
+            } else {
+                return false;
+            }
         }
 
-        if (is_err() && other.is_err()) {
-            return storage().template get<E>() < other.storage().template get<G>();
+        return unwrap_err_ref() == other.unwrap_err_ref();
+    }
+
+    template <typename U, typename G, auto OS, auto ES>
+    bool operator!=(const Result<U, G, OS, ES> &other) const {
+        return !(*this == other);  // keep as is
+    }
+};
+
+// =================================================================================================
+// Result<T, E> where neither T nor E are void
+// =================================================================================================
+
+template <typename T, typename E, auto OkSentinel, auto ErrSentinel>
+class [[nodiscard]] Result {
+    static_assert(!std::is_void_v<T>, "Use the Result<void, E> specialization.");
+    static_assert(!std::is_void_v<E>, "Use the Result<T, void> specialization.");
+    static_assert(!std::is_rvalue_reference_v<T>, "Result<T&&, E> is not supported.");
+    static_assert(!std::is_rvalue_reference_v<E>, "Result<T, E&&> is not supported.");
+
+    std::variant<wrapper::Ok<T>, wrapper::Err<E>> m_data;
+
+    [[maybe_unused]] wrapper::Ok<T> &ok_state() { return std::get<0>(m_data); }
+
+    const wrapper::Ok<T> &ok_state() const { return std::get<0>(m_data); }
+
+    [[maybe_unused]] wrapper::Err<E> &err_state() { return std::get<1>(m_data); }
+
+    const wrapper::Err<E> &err_state() const { return std::get<1>(m_data); }
+
+    [[maybe_unused]] T ok_take() {
+        if constexpr (std::is_lvalue_reference_v<T>) {
+            return *ok_state().value;
+        } else {
+            return std::move(ok_state().value);
+        }
+    }
+
+    [[maybe_unused]] E err_take() {
+        if constexpr (std::is_lvalue_reference_v<E>) {
+            return *err_state().value;
+        } else {
+            return std::move(err_state().value);
+        }
+    }
+
+   public:
+    using ok_type [[maybe_unused]] = T;
+    using err_type [[maybe_unused]] = E;
+
+    Result(wrapper::Ok<T> ok) : m_data{std::in_place_index<0>, std::move(ok)} {}
+
+    Result(wrapper::Err<E> err) : m_data{std::in_place_index<1>, std::move(err)} {}
+
+    Result(const Result &) = default;
+
+    Result(Result &&) noexcept(std::is_nothrow_move_constructible_v<decltype(m_data)>) = default;
+
+    Result &operator=(const Result &) = default;
+
+    Result &operator=(Result &&) noexcept(std::is_nothrow_move_assignable_v<decltype(m_data)>) =
+        default;
+
+    ~Result() = default;
+
+    // =============================================================================================
+    // member functions
+    // =============================================================================================
+
+    [[nodiscard]] bool is_ok() const noexcept { return m_data.index() == 0; }
+
+    [[nodiscard]] bool is_err() const noexcept { return m_data.index() == 1; }
+
+    [[maybe_unused]] decltype(auto) unwrap_ref() & {
+        if (!is_ok())
+            RESULT_ERROR("Tried to unwrap_ref a result containing an error");
+
+        if constexpr (std::is_lvalue_reference_v<T>) {
+            return *ok_state().value;
+        } else {
+            return (ok_state().value);
+        }
+    }
+
+    [[maybe_unused]] decltype(auto) unwrap_ref() const & {
+        if (!is_ok())
+            RESULT_ERROR("Tried to unwrap_ref a result containing an error");
+
+        if constexpr (std::is_lvalue_reference_v<T>) {
+            return *ok_state().value;
+        } else {
+            return static_cast<const T &>(ok_state().value);
+        }
+    }
+
+    [[maybe_unused]] decltype(auto) unwrap_err_ref() & {
+        if (!is_err())
+            RESULT_ERROR("Tried to unwrap_err_ref an error containing a result");
+
+        if constexpr (std::is_lvalue_reference_v<E>) {
+            return *err_state().value;
+        } else {
+            return (err_state().value);
+        }
+    }
+
+    [[maybe_unused]] decltype(auto) unwrap_err_ref() const & {
+        if (!is_err())
+            RESULT_ERROR("Tried to unwrap_err_ref an error containing a result");
+
+        if constexpr (std::is_lvalue_reference_v<E>) {
+            return *err_state().value;
+        } else {
+            return static_cast<const E &>(err_state().value);
+        }
+    }
+
+    [[maybe_unused]] decltype(auto) unwrap() && {
+        if (!is_ok())
+            RESULT_ERROR("Tried to unwrap a result containing an error");
+
+        return ok_take();
+    }
+
+    [[maybe_unused]] decltype(auto) unwrap_err() && {
+        if (!is_err())
+            RESULT_ERROR("Tried to unwrap an error containing a result");
+
+        return err_take();
+    }
+
+    [[maybe_unused]] decltype(auto) unwrap_unchecked() && { return ok_take(); }
+
+    [[maybe_unused]] decltype(auto) unwrap_err_unchecked() && { return err_take(); }
+
+    [[maybe_unused]] T unwrap_or(T fallback) && {
+        if (is_ok())
+            return ok_take();
+
+        return fallback;
+    }
+
+    template <typename U = T, typename = std::enable_if_t<!std::is_lvalue_reference_v<U> &&
+                                                          std::is_default_constructible_v<U>>>
+    [[maybe_unused]] T unwrap_or_default() && {
+        if (is_ok())
+            return ok_take();
+
+        return T{};
+    }
+
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    [[maybe_unused]] decltype(auto) unwrap_or_throw() && {
+        if (is_ok())
+            return std::move(*this).unwrap_unchecked();
+
+        static_assert(
+            !std::is_lvalue_reference_v<E>,
+            "unwrap_or_throw() is disabled for Result<T, E&> to avoid accidental slicing.");
+
+        static_assert(std::is_base_of_v<std::exception, std::remove_reference_t<E>>,
+                      "unwrap_or_throw() requires E to derive from std::exception.");
+
+        throw std::move(*this).unwrap_err_unchecked();
+    }
+#endif
+
+    [[maybe_unused]] decltype(auto) expect(const std::string &message) && {
+        if (is_ok())
+            return ok_take();
+
+        RESULT_ERROR(message);
+    }
+
+    template <typename Fn>
+    [[maybe_unused]] auto map(Fn &&fn) && {
+        using Arg = decltype(std::declval<Result &>().ok_take());
+        using Ret = std::invoke_result_t<Fn, Arg>;
+
+        if (is_ok()) {
+            if constexpr (std::is_void_v<Ret>) {
+                std::invoke(std::forward<Fn>(fn), ok_take());
+                return Result<void, E>(Ok());
+            } else {
+                return Result<Ret, E>(Ok(std::invoke(std::forward<Fn>(fn), ok_take())));
+            }
         }
 
-        return false;
+        if constexpr (std::is_void_v<Ret>) {
+            return Result<void, E>(Err(err_take()));
+        } else {
+            return Result<Ret, E>(Err(err_take()));
+        }
     }
 
-    /**
-     * @brief   Only available if T is less-than-or-equal comparable.
-     *          Returns true if this result contains Ok<T>
-     *          and the instance of T is less than or equal to the instance in
-     * other, else false.
-     */
-    template <typename U, Utils::enable_if_t<Utils::is_le_comparable<U, T>::value, bool> = true>
-    bool operator<=(const Wrapper::Ok<U> &other) {
-        return is_ok() && (storage().template get<T>() <= other._t);
-    }
+    template <typename ErrFn>
+    [[maybe_unused]] auto map_err(ErrFn &&fn) && {
+        using ErrArg = decltype(std::declval<Result &>().err_take());
+        using ErrRet = std::invoke_result_t<ErrFn, ErrArg>;
 
-    /**
-     * @brief   Only available if E is less-than-or-equal comparable.
-     *          Returns true if this result contains Err<E>
-     *          and the instance of E is less than or equal to the instance in
-     * other, else false.
-     */
-    template <typename U, Utils::enable_if_t<Utils::is_le_comparable<U, E>::value, bool> = true>
-    bool operator<=(const Wrapper::Err<U> &other) {
-        return is_err() && (storage().template get<E>() <= other._e);
-    }
-
-    /**
-     * @brief   Only available if T but no E is less-than-or-equal comparable.
-     *          Returns true if both results contain Ok<T> and the instance of T
-     *          is less than or equal to the instance of F, else false.
-     */
-    template <typename F, typename G,
-              Utils::enable_if_t<Utils::is_le_comparable<F, T>::value, bool> = true,
-              Utils::enable_if_t<!Utils::is_le_comparable<G, E>::value, bool> = true>
-    bool operator<=(const Result<F, G> &other) {
-        return (is_ok() && other.is_ok()) &&
-               (storage().template get<T>() <= other.storage().template get<F>());
-    }
-
-    /**
-     * @brief   Only available if E but no T is less-than-or-equal comparable.
-     *          Returns true if both results contain Err<E> and the instance of E
-     *          is less than or equal to the instance of G, else false.
-     */
-    template <typename F, typename G,
-              Utils::enable_if_t<!Utils::is_le_comparable<F, T>::value, bool> = true,
-              Utils::enable_if_t<Utils::is_le_comparable<G, E>::value, bool> = true>
-    bool operator<=(const Result<F, G> &other) {
-        return (is_err() && other.is_err()) &&
-               (storage().template get<E>() <= other.storage().template get<G>());
-    }
-
-    /**
-     * @brief   Only available if T and E are less-than-or-equal comparable.
-     *          Returns true if this result contains Ok<T>, other contains Ok<F>,
-     *          and the instance of T is less than or equal to the instance of F.
-     *          Returns true if this result contains Err<E>, other contains
-     * Err<G>, and the instance of E is less than or equal to the instance of G.
-     *          Returns false otherwise.
-     */
-    template <typename F, typename G,
-              Utils::enable_if_t<Utils::is_le_comparable<F, T>::value, bool> = true,
-              Utils::enable_if_t<Utils::is_le_comparable<G, E>::value, bool> = true>
-    bool operator<=(const Result<F, G> &other) {
-        if (is_ok() && other.is_ok()) {
-            return storage().template get<T>() <= other.storage().template get<F>();
+        if (is_err()) {
+            if constexpr (std::is_void_v<ErrRet>) {
+                std::invoke(std::forward<ErrFn>(fn), err_take());
+                return Result<T, void>(Err());
+            } else {
+                return Result<T, ErrRet>(Err(std::invoke(std::forward<ErrFn>(fn), err_take())));
+            }
         }
 
-        if (is_err() && other.is_err()) {
-            return storage().template get<E>() <= other.storage().template get<G>();
+        if constexpr (std::is_void_v<ErrRet>) {
+            return Result<T, void>(Ok(ok_take()));
+        } else {
+            return Result<T, ErrRet>(Ok(ok_take()));
         }
-
-        return false;
     }
 
-    /**
-     * @brief   Only available if T is greater-than comparable.
-     *          Returns true if this result contains Ok<T>
-     *          and the instance of T is greater than the instance in other,
-     *          else false.
-     */
-    template <typename U, Utils::enable_if_t<Utils::is_gt_comparable<U, T>::value, bool> = true>
-    bool operator>(const Wrapper::Ok<U> &other) {
-        return is_ok() && (storage().template get<T>() > other._t);
+    template <typename Fn, typename Ret>
+    [[maybe_unused]] auto map_or(Fn &&fn, Ret fallback) && {
+        if (is_ok())
+            return std::invoke(std::forward<Fn>(fn), ok_take());
+
+        return std::move(fallback);
     }
 
-    /**
-     * @brief   Only available if E is greater-than comparable.
-     *          Returns true if this result contains Err<E>
-     *          and the instance of E is greater than the instance in other,
-     *          else false.
-     */
-    template <typename U, Utils::enable_if_t<Utils::is_gt_comparable<U, E>::value, bool> = true>
-    bool operator>(const Wrapper::Err<U> &other) {
-        return is_err() && (storage().template get<E>() > other._e);
+    template <typename Fn, typename FnOther>
+    [[maybe_unused]] auto map_or_else(Fn &&fn, FnOther &&other) && {
+        if (is_ok())
+            return std::invoke(std::forward<Fn>(fn), ok_take());
+
+        return std::invoke(std::forward<FnOther>(other), err_take());
     }
 
-    /**
-     * @brief   Only available if T but no E is greater-than comparable.
-     *          Returns true if both results contain Ok<T> and the instance of T
-     *          is greater than the instance of F, else false.
-     */
-    template <typename F, typename G,
-              Utils::enable_if_t<Utils::is_gt_comparable<F, T>::value, bool> = true,
-              Utils::enable_if_t<!Utils::is_gt_comparable<G, E>::value, bool> = true>
-    bool operator>(const Result<F, G> &other) {
-        return (is_ok() && other.is_ok()) &&
-               (storage().template get<T>() > other.storage().template get<F>());
+    template <typename Fn>
+    [[maybe_unused]] auto and_then(Fn &&fn) && {
+        using Arg = decltype(std::declval<Result &>().ok_take());
+        using Ret = std::invoke_result_t<Fn, Arg>;
+
+        static_assert(detail::is_result<Ret>::value, "and_then callback must return Result<U, E>.");
+
+        static_assert(std::is_same_v<typename detail::destruct_result<Ret>::err_type, E>,
+                      "and_then callback must preserve the error type E.");
+
+        if (is_ok())
+            return std::invoke(std::forward<Fn>(fn), ok_take());
+
+        return Ret(Err(err_take()));
     }
 
-    /**
-     * @brief   Only available if E but no T is greater-than comparable.
-     *          Returns true if both results contain Err<E> and the instance of E
-     *          is greater than the instance of G, else false.
-     */
-    template <typename F, typename G,
-              Utils::enable_if_t<!Utils::is_gt_comparable<F, T>::value, bool> = true,
-              Utils::enable_if_t<Utils::is_gt_comparable<G, E>::value, bool> = true>
-    bool operator>(const Result<F, G> &other) {
-        return (is_err() && other.is_err()) &&
-               (storage().template get<E>() > other.storage().template get<G>());
+    template <typename ErrFn>
+    [[maybe_unused]] auto or_else(ErrFn &&fn) && {
+        using ErrArg = decltype(std::declval<Result &>().err_take());
+        using ErrRet = std::invoke_result_t<ErrFn, ErrArg>;
+
+        static_assert(detail::is_result<ErrRet>::value,
+                      "or_else callback must return Result<T, U>.");
+
+        static_assert(std::is_same_v<typename detail::destruct_result<ErrRet>::ok_type, T>,
+                      "or_else callback must preserve the ok type T.");
+
+        if (is_err())
+            return std::invoke(std::forward<ErrFn>(fn), err_take());
+
+        return ErrRet(Ok(ok_take()));
     }
 
-    /**
-     * @brief   Only available if T and E are greater-than comparable.
-     *          Returns true if this result contains Ok<T>, other contains Ok<F>,
-     *          and the instance of T is greater than the instance of F.
-     *          Returns true if this result contains Err<E>, other contains
-     * Err<G>, and the instance of E is greater than the instance of G. Returns
-     * false otherwise.
-     */
-    template <typename F, typename G,
-              Utils::enable_if_t<Utils::is_gt_comparable<F, T>::value, bool> = true,
-              Utils::enable_if_t<Utils::is_gt_comparable<G, E>::value, bool> = true>
-    bool operator>(const Result<F, G> &other) {
-        if (is_ok() && other.is_ok()) {
-            return storage().template get<T>() > other.storage().template get<F>();
+    bool operator==(const wrapper::Ok<T> &ok) const {
+        if (!is_ok())
+            return false;
+
+        if constexpr (std::is_lvalue_reference_v<T>) {
+            return unwrap_ref() == *ok.value;
+        } else {
+            return unwrap_ref() == ok.value;
         }
+    }
 
-        if (is_err() && other.is_err()) {
-            return storage().template get<E>() > other.storage().template get<G>();
+    bool operator!=(const wrapper::Ok<T> &ok) const {
+        return !(*this == ok);  // keep as is
+    }
+
+    bool operator==(const wrapper::Err<E> &err) const {
+        if (!is_err())
+            return false;
+
+        if constexpr (std::is_lvalue_reference_v<E>) {
+            return unwrap_err_ref() == *err.value;
+        } else {
+            return unwrap_err_ref() == err.value;
         }
-
-        return false;
     }
 
-    /**
-     * @brief   Only available if T is greater-than-or-equal comparable.
-     *          Returns true if this result contains Ok<T>
-     *          and the instance of T is greater than or equal to the instance in
-     * other, else false.
-     */
-    template <typename U, Utils::enable_if_t<Utils::is_ge_comparable<U, T>::value, bool> = true>
-    bool operator>=(const Wrapper::Ok<U> &other) {
-        return is_ok() && (storage().template get<T>() >= other._t);
+    bool operator!=(const wrapper::Err<E> &err) const {
+        return !(*this == err);  // keep as is
     }
 
-    /**
-     * @brief   Only available if E is greater-than-or-equal comparable.
-     *          Returns true if this result contains Err<E>
-     *          and the instance of E is greater than or equal to the instance in
-     * other, else false.
-     */
-    template <typename U, Utils::enable_if_t<Utils::is_ge_comparable<U, E>::value, bool> = true>
-    bool operator>=(const Wrapper::Err<U> &other) {
-        return is_err() && (storage().template get<E>() >= other._e);
+    template <typename U, typename G, auto OS, auto ES>
+    bool operator==(const Result<U, G, OS, ES> &other) const {
+        if (is_ok() != other.is_ok())
+            return false;
+
+        if (is_ok())
+            return unwrap_ref() == other.unwrap_ref();
+
+        return unwrap_err_ref() == other.unwrap_err_ref();
     }
 
-    /**
-     * @brief   Only available if T but no E is greater-than-or-equal comparable.
-     *          Returns true if both results contain Ok<T> and the instance of T
-     *          is greater than or equal to the instance of F, else false.
-     */
-    template <typename F, typename G,
-              Utils::enable_if_t<Utils::is_ge_comparable<F, T>::value, bool> = true,
-              Utils::enable_if_t<!Utils::is_ge_comparable<G, E>::value, bool> = true>
-    bool operator>=(const Result<F, G> &other) {
-        return (is_ok() && other.is_ok()) &&
-               (storage().template get<T>() >= other.storage().template get<F>());
-    }
 
-    /**
-     * @brief   Only available if E but no T is greater-than-or-equal comparable.
-     *          Returns true if both results contain Err<E> and the instance of E
-     *          is greater than or equal to the instance of G, else false.
-     */
-    template <typename F, typename G,
-              Utils::enable_if_t<!Utils::is_ge_comparable<F, T>::value, bool> = true,
-              Utils::enable_if_t<Utils::is_ge_comparable<G, E>::value, bool> = true>
-    bool operator>=(const Result<F, G> &other) {
-        return (is_err() && other.is_err()) &&
-               (storage().template get<E>() >= other.storage().template get<G>());
-    }
-
-    /**
-     * @brief   Only available if T and E are greater-than-or-equal comparable.
-     *          Returns true if this result contains Ok<T>, other contains Ok<F>,
-     *          and the instance of T is greater than or equal to the instance of
-     * F. Returns true if this result contains Err<E>, other contains Err<G>, and
-     * the instance of E is greater than or equal to the instance of G. Returns
-     * false otherwise.
-     */
-    template <typename F, typename G,
-              Utils::enable_if_t<Utils::is_ge_comparable<F, T>::value, bool> = true,
-              Utils::enable_if_t<Utils::is_ge_comparable<G, E>::value, bool> = true>
-    bool operator>=(const Result<F, G> &other) {
-        if (is_ok() && other.is_ok()) {
-            return storage().template get<T>() >= other.storage().template get<F>();
-        }
-
-        if (is_err() && other.is_err()) {
-            return storage().template get<E>() >= other.storage().template get<G>();
-        }
-
-        return false;
+    template <typename U, typename G, auto OS, auto ES>
+    bool operator!=(const Result<U, G, OS, ES> &other) const {
+        return !(*this == other);  // keep as is
     }
 };
 
 #ifdef RESULT_NAMESPACE
-}
+}  // namespace lsr::result
 #endif
 
-#undef RESULT_MAYBE_UNUSED
-#undef RESULT_NODISCARD
 #undef RESULT_ERROR
 
 #endif  // CPP_RESULT_RESULT_HPP
