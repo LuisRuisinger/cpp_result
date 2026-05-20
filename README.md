@@ -3,6 +3,10 @@
 A Rust-inspired `Result<T, E>` type for C++17 and later, with niche optimization support,
 reference semantics, and full `void` specializations.
 
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+
 ## Requirements
 
 C++17 or later.

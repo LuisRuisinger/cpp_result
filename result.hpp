@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #ifndef CPP_RESULT_RESULT_HPP
 #define CPP_RESULT_RESULT_HPP
 
@@ -14,11 +16,28 @@
 // Project files
 // =================================================================================================
 
-#include "optional.hpp"
+#include "include/optional.hpp"
 
 #if !defined(__cplusplus) || __cplusplus < 201703L
 #    error "Result<T, E> implementation requires C++17 or later."
 #endif
+
+// =================================================================================================
+// Version
+// =================================================================================================
+
+#define CPP_RESULT_VERSION_MAJOR 0
+#define CPP_RESULT_VERSION_MINOR 1
+#define CPP_RESULT_VERSION_PATCH 0
+
+#define CPP_RESULT_VERSION_STRING "0.1.0"
+
+#define CPP_RESULT_VERSION_ENCODE(major, minor, patch) \
+    (((major) * 10000) + ((minor) * 100) + (patch))
+
+#define CPP_RESULT_VERSION                                                        \
+    CPP_RESULT_VERSION_ENCODE(CPP_RESULT_VERSION_MAJOR, CPP_RESULT_VERSION_MINOR, \
+                              CPP_RESULT_VERSION_PATCH)
 
 #define RESULT_ERROR(_m)              \
     do {                              \
@@ -1210,7 +1229,6 @@ class [[nodiscard]] Result {
 
         return unwrap_err_ref() == other.unwrap_err_ref();
     }
-
 
     template <typename U, typename G, auto OS, auto ES>
     bool operator!=(const Result<U, G, OS, ES> &other) const {

@@ -26,6 +26,16 @@ ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 */
 
+/*
+Modifications Copyright (c) 2026 Luis Ruisinger.
+
+This file contains modifications to code originally distributed under the
+Boost Software License 1.0. The original and modified portions of this file
+remain subject to the Boost Software License 1.0.
+*/
+
+// SPDX-License-Identifier: BSL-1.0
+
 #include <cassert>
 #include <climits>
 #include <cstdint>      // required for std::uint64_t etc.
