@@ -1,4 +1,4 @@
-# cpp_result
+# Result
 
 A Rust-inspired `Result<T, E>` type for C++17 and later.
 
@@ -21,7 +21,7 @@ include(FetchContent)
 
 FetchContent_Declare(
     result
-    GIT_REPOSITORY https://github.com/LuisRuisinger/cpp_result.git
+    GIT_REPOSITORY https://github.com/LuisRuisinger/result.git
     GIT_TAG v0.1.0
 )
 
