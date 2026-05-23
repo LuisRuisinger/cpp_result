@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
-#ifndef CPP_RESULT_RESULT_HPP
-#define CPP_RESULT_RESULT_HPP
+#ifndef LRUSINGER_RESULT_INCLUDE_RESULT_RESULT_HPP_
+#define LRUSINGER_RESULT_INCLUDE_RESULT_RESULT_HPP_
 
 #include <exception>
 #include <functional>
@@ -16,7 +16,7 @@
 // Project files
 // =================================================================================================
 
-#include "include/optional.hpp"
+#include "detail/optional.hpp"
 
 #if !defined(__cplusplus) || __cplusplus < 201703L
 #    error "Result<T, E> implementation requires C++17 or later."
@@ -1242,4 +1242,4 @@ class [[nodiscard]] Result {
 
 #undef RESULT_ERROR
 
-#endif  // CPP_RESULT_RESULT_HPP
+#endif  // LRUSINGER_RESULT_INCLUDE_RESULT_RESULT_HPP_

@@ -1,0 +1,76 @@
+---
+Checks: >
+  -*,
+  bugprone-*,
+  clang-analyzer-*,
+  cppcoreguidelines-*,
+  modernize-*,
+  performance-*,
+  portability-*,
+  readability-*,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -readability-magic-numbers,
+  -cppcoreguidelines-pro-bounds-pointer-arithmetic,
+  -cppcoreguidelines-pro-bounds-array-to-pointer-decay,
+  -cppcoreguidelines-pro-type-reinterpret-cast,
+  -cppcoreguidelines-pro-type-union-access,
+  -cppcoreguidelines-owning-memory,
+  -cppcoreguidelines-no-malloc,
+  -cppcoreguidelines-macro-usage,
+  -modernize-use-trailing-return-type,
+  -modernize-use-concepts,
+  -modernize-use-nodiscard,
+  -readability-identifier-length,
+  -readability-function-cognitive-complexity,
+  -readability-function-size,
+  -readability-convert-member-functions-to-static,
+  -readability-named-parameter
+
+WarningsAsErrors: ''
+
+HeaderFilterRegex: '.*'
+
+AnalyzeTemporaryDtors: false
+
+FormatStyle: file
+
+CheckOptions:
+  - key: readability-identifier-naming.NamespaceCase
+    value: lower_case
+
+  - key: readability-identifier-naming.ClassCase
+    value: CamelCase
+
+  - key: readability-identifier-naming.StructCase
+    value: CamelCase
+
+  - key: readability-identifier-naming.FunctionCase
+    value: lower_case
+
+  - key: readability-identifier-naming.VariableCase
+    value: lower_case
+
+  - key: readability-identifier-naming.PrivateMemberPrefix
+    value: m_
+
+  - key: readability-identifier-naming.PrivateMemberCase
+    value: lower_case
+
+  - key: readability-identifier-naming.TemplateParameterCase
+    value: CamelCase
+
+  - key: readability-identifier-naming.TypeAliasCase
+    value: lower_case
+
+  - key: readability-identifier-naming.TypeAliasSuffix
+    value: _t
+
+  - key: readability-identifier-naming.ConstexprVariableCase
+    value: lower_case
+
+  - key: readability-identifier-naming.GlobalConstantCase
+    value: UPPER_CASE
+
+  - key: readability-identifier-naming.MacroDefinitionCase
+    value: UPPER_CASE
+...

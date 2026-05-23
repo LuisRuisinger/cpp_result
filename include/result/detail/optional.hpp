@@ -1,4 +1,5 @@
-#pragma once
+#ifndef LRUSINGER_RESULT_INCLUDE_RESULT_DETAIL_OPTIONAL_HPP_
+#define LRUSINGER_RESULT_INCLUDE_RESULT_DETAIL_OPTIONAL_HPP_
 
 /*
 Boost Software License - Version 1.0 - August 17th, 2003
@@ -3175,3 +3176,5 @@ namespace std {
 // Pop "-Wmaybe-uninitialized"
 #    pragma GCC diagnostic pop
 #endif
+
+#endif // LRUSINGER_RESULT_INCLUDE_RESULT_DETAIL_OPTIONAL_HPP_
